@@ -1,0 +1,2499 @@
+---
+title: "Benchmarking ensembles in customer churn prediction"
+author: "Lex Delaere and Matthias Bogaert"
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  pdf_document: default
+---
+
+## Load the packages
+
+Make sure that all the packages are installed before loading, 
+if not run `install.packages("package-name")`.
+
+```{r message=FALSE, warning=FALSE}
+### set working directory
+
+### importing libraries
+library(plyr)
+library(scales)
+library(data.table)
+library(fastDummies)
+library(Rdimtools)
+library(paramtest)
+library(pROC)
+library(AUC)
+library(glmnet)
+library(lift)
+library(caret)
+library(rpart)
+library(e1071)
+library(nnet)
+library(ipred)
+library(EMP)
+library(randomForest)
+library(fastAdaboost)
+library(xgboost)
+library(gbm)
+library(glmtree)
+library(rotationForest)
+library(RWeka)
+WPM("refresh-cache")
+WPM("install-package", "alternatingDecisionTrees")
+WPM("load-package", "alternatingDecisionTrees")
+library(genalg)
+library(quadprog)
+library(lsei)
+library(NMOF)
+library(pso)
+library(GenSA)
+library(ddpcr)
+library(Rmalschains)
+library(soma)
+library(pROC)
+library(tabuSearch)
+library(compositions)
+library(scmamp) #install via github with devtools
+library(xlsx)
+library(MCMCpack)
+library(FSelector)
+library(pre)
+library(lightgbm)
+library(catboost)
+library(tidyverse)
+library(imputeMissings)
+library(dummy)
+library(LLM)
+library(pre)
+library(party)
+
+#set seed
+set.seed(100) 
+```
+
+## Load the data sets
+
+Make sure that all the data sets are in the same working directory as this code file. 
+
+Note that the first 3 data sets are private and cannot be found in the repo. The other datasets can be downloaded via the links in the paper. 
+
+```{r}
+### importing the datasets into R
+
+#Dataset 1
+load('basetable_npc.Rdata')
+
+#Dataset 2
+basetable_karting <- read.csv('basetable_karting.csv', 
+                              stringsAsFactors = TRUE)
+
+#Dataset 3
+b2b <- read.csv('basetablePython.csv', 
+                stringsAsFactors = TRUE)
+b2b$X <- NULL
+
+#Dataset 4
+bigml_59c28831336c6604c800002a <- read.csv('bigml_59c28831336c6604c800002a.csv', 
+                                           stringsAsFactors = TRUE)
+
+#Dataset 5
+Churn_Modelling <- read.csv('Churn_Modelling.csv', 
+                            stringsAsFactors = TRUE)
+
+#Dataset 6
+KDD_all <- read.csv('KDD_all.csv', 
+                    stringsAsFactors = TRUE)
+KDD_all$X <- NULL
+
+#Dataset7
+telecom_churn <- read.csv('telecom_churn.csv', 
+                          stringsAsFactors = TRUE)
+
+#Dataset 8
+WA_Fn_UseC_Telco_Customer_Churn <- read.csv('WA_Fn-UseC_-Telco-Customer-Churn.csv', 
+                                            stringsAsFactors = TRUE)
+
+#Dataset 9
+south_asia <- read.csv('South Asian Wireless Telecom Operator (SATO 2015).csv',
+                       na.strings = c('NA', ''),
+                       stringsAsFactors = TRUE)
+
+
+#Dataset 10
+cell2cell <- read.csv('cell2celltrain.csv', 
+                      na.strings = c('NA', 'Unknown'), 
+                      stringsAsFactors = TRUE)
+
+#Dataset 11
+uci <- read.csv('uci.csv', 
+                stringsAsFactors = TRUE)
+uci$X <- NULL
+```
+
+## basic data cleaning
+
+```{r}
+### deleting customerIDs and other redundant variables
+basetable_karting$custid <- NULL ; basetable_karting$X <- NULL
+cell2cell$CustomerID <- NULL
+Churn_Modelling$RowNumber <- NULL ; Churn_Modelling$CustomerId <- NULL ; Churn_Modelling$Surname <- NULL
+WA_Fn_UseC_Telco_Customer_Churn$customerID <- NULL
+
+### renaming dependent columns to churn
+names(Churn_Modelling)[names(Churn_Modelling) == "Exited"] <- "churn"
+names(telecom_churn)[names(telecom_churn) == "Churn"] <- "churn"
+names(WA_Fn_UseC_Telco_Customer_Churn)[names(WA_Fn_UseC_Telco_Customer_Churn) == "Churn"] <- "churn"
+names(cell2cell)[names(cell2cell) == "Churn"] <- "churn"
+names(south_asia)[names(south_asia) == "Class"] <- "churn"
+
+### Set all churn variables to 1 if churn and 0 otherwise and as factor
+b2b$churn <- as.factor(b2b$churn)
+
+basetable$churn <- as.factor(basetable$churn)
+
+basetable_karting$churn <- as.factor(basetable_karting$churn)
+
+bigml_59c28831336c6604c800002a <-  bigml_59c28831336c6604c800002a %>% 
+  mutate(churn = if_else(churn == "False", 0,1)) %>% 
+  mutate(churn = as.factor(churn))
+
+cell2cell <- cell2cell %>% 
+  mutate(churn = if_else(churn == "No", 0,1)) %>% 
+  mutate(churn = as.factor(churn))
+
+Churn_Modelling$churn <- as.factor(Churn_Modelling$churn)
+
+KDD_all$churn <- as.factor(KDD_all$churn)
+
+south_asia <- south_asia %>% 
+  mutate(churn = if_else(churn == "Active", 0,1)) %>% 
+  mutate(churn = as.factor(churn))
+
+telecom_churn$churn <- as.factor(telecom_churn$churn)
+
+uci$churn <- as.factor(uci$churn)
+
+WA_Fn_UseC_Telco_Customer_Churn <- WA_Fn_UseC_Telco_Customer_Churn %>% 
+  mutate(churn = if_else(churn == "No", 0,1)) %>% 
+  mutate(churn = as.factor(churn))
+```
+
+## missing values
+
+```{r}
+### Join all the datasets in 1 list for easy preprocessing
+all_data <- list(basetable,
+                 basetable_karting, 
+                 b2b, 
+                 bigml_59c28831336c6604c800002a,
+                 Churn_Modelling,
+                 KDD_all,
+                 telecom_churn,
+                 WA_Fn_UseC_Telco_Customer_Churn,
+                 south_asia,
+                 cell2cell, 
+                 uci)
+
+### check the missing values
+for (i in all_data){
+  print(sum(is.na(i)))
+}
+
+### remove the instances with missing values with less than 5% 
+WA_Fn_UseC_Telco_Customer_Churn <- na.omit(WA_Fn_UseC_Telco_Customer_Churn)
+
+### For the other data sets have a look at the attributes and follow this procedure:
+# - if less then 5% is missing of the attribute -> delete these rows
+# - for the other attributes, impute using zero imputation, median or mode based upon the variable
+
+
+#### cell2cell
+n_missing <- colSums(is.na(cell2cell))/nrow(cell2cell)
+(n_missing_less_5 <- which(n_missing < 0.05 & n_missing > 0.00) %>% names)
+
+cell2cell <- cell2cell %>% 
+  drop_na(all_of(n_missing_less_5)) %>% 
+  impute(.)
+
+#### south asia
+n_missing <- colSums(is.na(south_asia))/nrow(south_asia)
+(n_missing_less_5 <- which(n_missing < 0.05 & n_missing > 0.00) %>% names)
+
+south_asia <- south_asia %>% 
+  drop_na(all_of(n_missing_less_5)) %>% 
+  impute(.)
+
+```
+
+## class imbalance
+
+```{r}
+### check distribution of churners vs non-churners 
+all_data <- list(basetable,
+                 basetable_karting, 
+                 b2b, 
+                 bigml_59c28831336c6604c800002a,
+                 Churn_Modelling,
+                 KDD_all,
+                 telecom_churn,
+                 WA_Fn_UseC_Telco_Customer_Churn,
+                 south_asia,
+                 cell2cell, 
+                 uci)
+
+for (i in all_data){
+  print(round(table(i$churn)/ nrow(i),2))
+}
+```
+
+## data manipulation
+
+```{r}
+### making all values numeric WA_Fn_UseC_Telco_Customer_Churn
+
+### removing customerID from the table
+WA_Fn_UseC_Telco_Customer_Churn = WA_Fn_UseC_Telco_Customer_Churn[,!(names(WA_Fn_UseC_Telco_Customer_Churn) %in% c("customerID"))]
+
+### making gender binary integer
+levels(WA_Fn_UseC_Telco_Customer_Churn$gender)[levels(WA_Fn_UseC_Telco_Customer_Churn$gender) == "Male"] <- "0"
+levels(WA_Fn_UseC_Telco_Customer_Churn$gender)[levels(WA_Fn_UseC_Telco_Customer_Churn$gender) == "Female"] <- "1"
+WA_Fn_UseC_Telco_Customer_Churn$gender <- as.integer(as.numeric(as.character(WA_Fn_UseC_Telco_Customer_Churn$gender)))
+
+### making partner binary integer
+levels(WA_Fn_UseC_Telco_Customer_Churn$Partner)[levels(WA_Fn_UseC_Telco_Customer_Churn$Partner) == "No"] <- "0"
+levels(WA_Fn_UseC_Telco_Customer_Churn$Partner)[levels(WA_Fn_UseC_Telco_Customer_Churn$Partner) == "Yes"] <- "1"
+WA_Fn_UseC_Telco_Customer_Churn$Partner <- as.integer(as.numeric(as.character(WA_Fn_UseC_Telco_Customer_Churn$Partner)))
+
+### making dependents binary integer
+levels(WA_Fn_UseC_Telco_Customer_Churn$Dependents)[levels(WA_Fn_UseC_Telco_Customer_Churn$Dependents) == "No"] <- "0"
+levels(WA_Fn_UseC_Telco_Customer_Churn$Dependents)[levels(WA_Fn_UseC_Telco_Customer_Churn$Dependents) == "Yes"] <- "1"
+WA_Fn_UseC_Telco_Customer_Churn$Dependents <- as.integer(as.numeric(as.character(WA_Fn_UseC_Telco_Customer_Churn$Dependents)))
+
+### making PhoneService binary integer
+levels(WA_Fn_UseC_Telco_Customer_Churn$PhoneService)[levels(WA_Fn_UseC_Telco_Customer_Churn$PhoneService) == "No"] <- "0"
+levels(WA_Fn_UseC_Telco_Customer_Churn$PhoneService)[levels(WA_Fn_UseC_Telco_Customer_Churn$PhoneService) == "Yes"] <- "1"
+WA_Fn_UseC_Telco_Customer_Churn$PhoneService <- as.integer(as.numeric(as.character(WA_Fn_UseC_Telco_Customer_Churn$PhoneService)))
+
+### making MultipleLines binary integer
+levels(WA_Fn_UseC_Telco_Customer_Churn$MultipleLines)[levels(WA_Fn_UseC_Telco_Customer_Churn$MultipleLines) %like% "^No"] <- "0"
+levels(WA_Fn_UseC_Telco_Customer_Churn$MultipleLines)[levels(WA_Fn_UseC_Telco_Customer_Churn$MultipleLines) == "Yes"] <- "1"
+WA_Fn_UseC_Telco_Customer_Churn$MultipleLines <- as.integer(as.numeric(as.character(WA_Fn_UseC_Telco_Customer_Churn$MultipleLines)))
+
+### dummy code InternetService into type and internetservice (yes or no)
+WA_Fn_UseC_Telco_Customer_Churn <- dummy_columns(WA_Fn_UseC_Telco_Customer_Churn,select_columns = c("InternetService"),remove_first_dummy = TRUE)
+WA_Fn_UseC_Telco_Customer_Churn <- WA_Fn_UseC_Telco_Customer_Churn[,!(names(WA_Fn_UseC_Telco_Customer_Churn) %in% c("InternetService"))]
+names(WA_Fn_UseC_Telco_Customer_Churn)[names(WA_Fn_UseC_Telco_Customer_Churn) == "InternetService_Fiber optic"] <- "InternetServiceType"
+names(WA_Fn_UseC_Telco_Customer_Churn)[names(WA_Fn_UseC_Telco_Customer_Churn) == "InternetService_No"] <- "InternetService"
+WA_Fn_UseC_Telco_Customer_Churn$InternetService <- 1- WA_Fn_UseC_Telco_Customer_Churn$InternetService
+
+### making the other variable related to internet binary
+levels(WA_Fn_UseC_Telco_Customer_Churn$OnlineSecurity)[levels(WA_Fn_UseC_Telco_Customer_Churn$OnlineSecurity) %like% "^No"] <- "0"
+levels(WA_Fn_UseC_Telco_Customer_Churn$OnlineSecurity)[levels(WA_Fn_UseC_Telco_Customer_Churn$OnlineSecurity) == "Yes"] <- "1"
+WA_Fn_UseC_Telco_Customer_Churn$OnlineSecurity <- as.integer(as.numeric(as.character(WA_Fn_UseC_Telco_Customer_Churn$OnlineSecurity)))
+
+levels(WA_Fn_UseC_Telco_Customer_Churn$OnlineBackup)[levels(WA_Fn_UseC_Telco_Customer_Churn$OnlineBackup) %like% "^No"] <- "0"
+levels(WA_Fn_UseC_Telco_Customer_Churn$OnlineBackup)[levels(WA_Fn_UseC_Telco_Customer_Churn$OnlineBackup) == "Yes"] <- "1"
+WA_Fn_UseC_Telco_Customer_Churn$OnlineBackup <- as.integer(as.numeric(as.character(WA_Fn_UseC_Telco_Customer_Churn$OnlineBackup)))
+
+levels(WA_Fn_UseC_Telco_Customer_Churn$DeviceProtection)[levels(WA_Fn_UseC_Telco_Customer_Churn$DeviceProtection) %like% "^No"] <- "0"
+levels(WA_Fn_UseC_Telco_Customer_Churn$DeviceProtection)[levels(WA_Fn_UseC_Telco_Customer_Churn$DeviceProtection) == "Yes"] <- "1"
+WA_Fn_UseC_Telco_Customer_Churn$DeviceProtection <- as.integer(as.numeric(as.character(WA_Fn_UseC_Telco_Customer_Churn$DeviceProtection)))
+
+levels(WA_Fn_UseC_Telco_Customer_Churn$TechSupport)[levels(WA_Fn_UseC_Telco_Customer_Churn$TechSupport) %like% "^No"] <- "0"
+levels(WA_Fn_UseC_Telco_Customer_Churn$TechSupport)[levels(WA_Fn_UseC_Telco_Customer_Churn$TechSupport) == "Yes"] <- "1"
+WA_Fn_UseC_Telco_Customer_Churn$TechSupport <- as.integer(as.numeric(as.character(WA_Fn_UseC_Telco_Customer_Churn$TechSupport)))
+
+levels(WA_Fn_UseC_Telco_Customer_Churn$StreamingTV)[levels(WA_Fn_UseC_Telco_Customer_Churn$StreamingTV) %like% "^No"] <- "0"
+levels(WA_Fn_UseC_Telco_Customer_Churn$StreamingTV)[levels(WA_Fn_UseC_Telco_Customer_Churn$StreamingTV) == "Yes"] <- "1"
+WA_Fn_UseC_Telco_Customer_Churn$StreamingTV <- as.integer(as.numeric(as.character(WA_Fn_UseC_Telco_Customer_Churn$StreamingTV)))
+
+levels(WA_Fn_UseC_Telco_Customer_Churn$StreamingMovies)[levels(WA_Fn_UseC_Telco_Customer_Churn$StreamingMovies) %like% "^No"] <- "0"
+levels(WA_Fn_UseC_Telco_Customer_Churn$StreamingMovies)[levels(WA_Fn_UseC_Telco_Customer_Churn$StreamingMovies) == "Yes"] <- "1"
+WA_Fn_UseC_Telco_Customer_Churn$StreamingMovies <- as.integer(as.numeric(as.character(WA_Fn_UseC_Telco_Customer_Churn$StreamingMovies)))
+
+### dummy code Contract
+WA_Fn_UseC_Telco_Customer_Churn <- dummy_columns(WA_Fn_UseC_Telco_Customer_Churn,select_columns = c("Contract"),remove_first_dummy = TRUE)
+WA_Fn_UseC_Telco_Customer_Churn <- WA_Fn_UseC_Telco_Customer_Churn[,!(names(WA_Fn_UseC_Telco_Customer_Churn) %in% c("Contract"))]
+
+### make PaperlessBilling binary integer
+levels(WA_Fn_UseC_Telco_Customer_Churn$PaperlessBilling)[levels(WA_Fn_UseC_Telco_Customer_Churn$PaperlessBilling) %like% "^No"] <- "0"
+levels(WA_Fn_UseC_Telco_Customer_Churn$PaperlessBilling)[levels(WA_Fn_UseC_Telco_Customer_Churn$PaperlessBilling) == "Yes"] <- "1"
+WA_Fn_UseC_Telco_Customer_Churn$PaperlessBilling <- as.integer(as.numeric(as.character(WA_Fn_UseC_Telco_Customer_Churn$PaperlessBilling)))
+
+### dummy code PaymentMethod
+WA_Fn_UseC_Telco_Customer_Churn <- dummy_columns(WA_Fn_UseC_Telco_Customer_Churn,select_columns = c("PaymentMethod"),remove_first_dummy = TRUE)
+WA_Fn_UseC_Telco_Customer_Churn <- WA_Fn_UseC_Telco_Customer_Churn[,!(names(WA_Fn_UseC_Telco_Customer_Churn) %in% c("PaymentMethod"))]
+
+### rename dummy columns
+names(WA_Fn_UseC_Telco_Customer_Churn)[names(WA_Fn_UseC_Telco_Customer_Churn) == "Contract_One year"] <- "Contract_one_year"
+names(WA_Fn_UseC_Telco_Customer_Churn)[names(WA_Fn_UseC_Telco_Customer_Churn) == "Contract_Two year"] <- "Contract_two_year"
+names(WA_Fn_UseC_Telco_Customer_Churn)[names(WA_Fn_UseC_Telco_Customer_Churn) == "PaymentMethod_Credit card (automatic)"] <- "PaymentMethod_credit_card_automatic"
+names(WA_Fn_UseC_Telco_Customer_Churn)[names(WA_Fn_UseC_Telco_Customer_Churn) == "PaymentMethod_Electronic check"] <- "PaymentMethod_electronic_check"
+names(WA_Fn_UseC_Telco_Customer_Churn)[names(WA_Fn_UseC_Telco_Customer_Churn) == "PaymentMethod_Mailed check"] <- "PaymentMethod_mailed_check"
+
+### all values to numeric KDD
+
+### dummy code Var205
+KDD_all <- dummy_columns(KDD_all,select_columns = c("Var205"),remove_first_dummy = TRUE)
+KDD_all <- KDD_all[,!(names(KDD_all)%in% c("Var205"))]
+
+### make Var208 ; Var211 ; Var218 binary
+levels(KDD_all$Var208)[levels(KDD_all$Var208) == "kIsH"] <- "0"
+levels(KDD_all$Var208)[levels(KDD_all$Var208) == "sBgB"] <- "1"
+KDD_all$Var208 <- as.integer(as.numeric(as.character(KDD_all$Var208)))
+
+levels(KDD_all$Var211)[levels(KDD_all$Var211) == "Mtgm"] <- "0"
+levels(KDD_all$Var211)[levels(KDD_all$Var211) == "L84s"] <- "1"
+KDD_all$Var211 <- as.integer(as.numeric(as.character(KDD_all$Var211)))
+
+levels(KDD_all$Var218)[levels(KDD_all$Var218) == "UYBR"] <- "0"
+levels(KDD_all$Var218)[levels(KDD_all$Var218) == "cJvF"] <- "1"
+KDD_all$Var218 <- as.integer(as.numeric(as.character(KDD_all$Var218)))
+
+### all values to numeric Churn_Modelling
+
+### dummy code Geography
+Churn_Modelling <- dummy_columns(Churn_Modelling,select_columns = c("Geography"),
+                                 remove_first_dummy = TRUE)
+Churn_Modelling <- Churn_Modelling[,!(names(Churn_Modelling)%in% c("Geography"))]
+
+### make gender binary
+levels(Churn_Modelling$Gender)[levels(Churn_Modelling$Gender) == "Male"] <- "0"
+levels(Churn_Modelling$Gender)[levels(Churn_Modelling$Gender) == "Female"] <- "1"
+Churn_Modelling$Gender <- as.integer(as.numeric(as.character(Churn_Modelling$Gender)))
+
+### all values to numeric bigml
+
+### drop phone.number
+bigml_59c28831336c6604c800002a <- bigml_59c28831336c6604c800002a[,!(names(bigml_59c28831336c6604c800002a) %in% c("phone.number"))]
+
+### make international.plan binary
+levels(bigml_59c28831336c6604c800002a$international.plan)[levels(bigml_59c28831336c6604c800002a$international.plan) == "no"] <- "0"
+levels(bigml_59c28831336c6604c800002a$international.plan)[levels(bigml_59c28831336c6604c800002a$international.plan) == "yes"] <- "1"
+bigml_59c28831336c6604c800002a$international.plan <- as.integer(as.numeric(as.character(bigml_59c28831336c6604c800002a$international.plan)))
+
+### make voice.mail.plan binary
+levels(bigml_59c28831336c6604c800002a$voice.mail.plan)[levels(bigml_59c28831336c6604c800002a$voice.mail.plan) == "no"] <- "0"
+levels(bigml_59c28831336c6604c800002a$voice.mail.plan)[levels(bigml_59c28831336c6604c800002a$voice.mail.plan) == "yes"] <- "1"
+bigml_59c28831336c6604c800002a$voice.mail.plan <- as.integer(as.numeric(as.character(bigml_59c28831336c6604c800002a$voice.mail.plan)))
+
+### for state and area code only include the top 10 to avoid explosion in nbr of var
+dummies <- bigml_59c28831336c6604c800002a %>% 
+  mutate(area.code = as.character(area.code)) %>% 
+  select(-churn) %>% 
+  dummy(., p = 10, int = TRUE)
+
+bigml_59c28831336c6604c800002a <- bigml_59c28831336c6604c800002a %>% 
+  mutate(area.code = as.character(area.code)) %>% 
+  select(where(~ is.numeric(.x) | is.integer(.x))) %>% 
+  bind_cols(dummies) %>% 
+  bind_cols(churn = bigml_59c28831336c6604c800002a$churn)
+
+  
+### cell2cell
+dummies1 <- cell2cell %>% 
+  select(where(is.factor)) %>% 
+  select(where(~ length(unique(.x)) > 10)) %>% 
+  dummy(., p = 10, int = TRUE)
+
+dummies2 <- cell2cell %>% 
+  select(where(is.factor)) %>% 
+  select(where(~ length(unique(.x)) < 10 & length(unique(.x)) > 2)) %>% 
+  dummy_cols(., remove_first_dummy = TRUE, remove_selected_columns = TRUE)
+
+cell2cell$Homeownership <- NULL #no variation
+
+dummies3 <- cell2cell %>% 
+  select(-churn) %>% 
+  select(where(is.factor)) %>% 
+  select(where(~ length(unique(.x)) == 2)) %>% 
+  mutate(across(everything(), ~ as.integer(ifelse(.x == 'Yes',1,0))))
+
+cell2cell <- cell2cell %>% 
+  select(where(~ is.numeric(.x) | is.integer(.x))) %>% 
+  bind_cols(dummies1,dummies2,dummies3) %>% 
+  bind_cols(churn = cell2cell$churn)
+
+#Change names to avoid mistakes in modeling stage 
+names(cell2cell) <- str_replace_all(names(cell2cell), "_|-", "")
+
+### south asia
+south_asia <- south_asia %>% 
+  select(-churn) %>% 
+  dummy_cols(., remove_first_dummy = TRUE, remove_selected_columns = TRUE) %>% 
+  mutate(churn = south_asia$churn)
+
+### uci 
+uci <- uci %>% 
+  select(-churn) %>% 
+  dummy_cols(remove_first_dummy = TRUE, remove_selected_columns = TRUE) %>% 
+  mutate(churn = uci$churn)
+
+### b2b
+dummies1 <- b2b %>% 
+  select(where(is.factor)) %>% 
+  select(where(~ length(unique(.x)) > 10)) %>% 
+  dummy(., p = 10, int = TRUE)
+
+b2b <- b2b %>% 
+  select(where(~ is.numeric(.x) | is.integer(.x))) %>% 
+  bind_cols(dummies1) %>% 
+  bind_cols(churn = b2b$churn)
+
+### make a list of all data sets
+all_data <- list(basetable = basetable,
+                 basetable_karting = basetable_karting, 
+                 b2b = b2b, 
+                 bigml_59c28831336c6604c800002a = bigml_59c28831336c6604c800002a,
+                 Churn_Modelling= Churn_Modelling,
+                 KDD_all = KDD_all,
+                 telecom_churn = telecom_churn,
+                 WA_Fn_UseC_Telco_Customer_Churn = WA_Fn_UseC_Telco_Customer_Churn,
+                 south_asia = south_asia,
+                 cell2cell = cell2cell, 
+                 uci = uci)
+
+#Clear memory
+rm(list = c('dummies', 'dummies1', 'dummies2', 'dummies3', 'i'))
+```
+
+## Algorithms and helper functions
+
+### helper functions
+
+cross validation
+
+```{r}
+# function that makes folds for cross validation
+cross_validation_folds <- function (data){
+  data
+  #Randomly shuffle the data
+  data <- data[sample(nrow(data)),]
+  # make 5 folds
+  folds <- cut(seq(1,nrow(data)),breaks=5,labels=FALSE)
+  return (folds)
+}
+```
+
+fisher score based feature selection
+
+```{r}
+# function to reduce dimentionality for datasets with more than 20 features to 20
+feature_selection_fisher <- function(train, val ,test){
+  if (length(names(train[,names(train) != "churn"])) > 20){
+    df <- train[,names(train) != "churn"]
+    df[] <- sapply(df, as.character)
+    df[]<- sapply(df, as.numeric)
+    df <- as.matrix(df)
+    label <- train[,"churn"]
+    sol <- do.fscore(X = df,label = label, ndim= 20)
+    sol <- sol$featidx
+    train_temp <- train[,names(train) != "churn"]
+    train_fisher <- cbind(train[,"churn"], train_temp[,sol])
+    colnames(train_fisher)[1] <- "churn"
+    val_temp <- val[,names(val) != "churn"]
+    val_fisher <- cbind(val[,"churn"],val_temp[,sol])
+    colnames(val_fisher)[1] <- "churn"
+    test_temp <- test[,names(test) != "churn"]
+    test_fisher <- cbind(test[,"churn"],test_temp[,sol])
+    colnames(test_fisher)[1] <- "churn"
+    result <- list(train_fisher,test_fisher,val_fisher)
+  } else {
+    result <- list(train,test,val)
+  }
+  return (result)
+}
+```
+
+probabilities to class with 50% cutoff
+
+```{r}
+#function that converts probabilites to predictions cutoff = 50%
+get_predictions <- function (probs){
+  predictions <- ifelse(probs > 0.5, 1,0)
+  return (predictions)
+}
+```
+
+functions for evaluation
+
+```{r}
+# function to calculate the AUC
+area_under_roc <- function (probs,test){
+  #test_roc = pROC::roc(test ~ probs, plot = FALSE, print.auc = FALSE, levels = c(0, 1), direction = "<")
+  #auc = as.numeric(test_roc$auc)
+  test_roc = AUC::auc(AUC::roc(probs,test))
+  auc = as.numeric(test_roc)
+  return (auc)
+}
+
+# function to calculate the accuracy
+acc <- function (preds,test){
+  tab <- table(preds, test)
+  if(nrow(tab)!=ncol(tab)){
+    
+    missings <- setdiff(colnames(tab),rownames(tab))
+    
+    missing_mat <- mat.or.vec(nr = length(missings), nc = ncol(tab))
+    tab  <- as.table(rbind(as.matrix(tab), missing_mat))
+    rownames(tab) <- colnames(tab)
+  }
+  accuracy = (tab[1,1] + tab[2,2])/(tab[1,1] + tab[1,2] + tab[2,1] + tab[2,2])
+  return (accuracy)
+}
+
+#function that  calculates the F-measure
+F_measure <- function (preds,test){
+  tab <- table(preds, test)
+  if(nrow(tab)!=ncol(tab)){
+    
+    missings <- setdiff(colnames(tab),rownames(tab))
+    
+    missing_mat <- mat.or.vec(nr = length(missings), nc = ncol(tab))
+    tab  <- as.table(rbind(as.matrix(tab), missing_mat))
+    rownames(tab) <- colnames(tab)
+  }
+  F_measure = F_meas(tab)
+  return (F_measure)
+} 
+
+#function tht calculates the expected maximum profit
+MP <- function(preds,test){
+  EMP = empChurn(preds,test)[[3]]
+  return(EMP)
+}
+```
+
+function to perform all evaluations
+
+```{r}
+#function that evaluates the algorithm
+evaluation <- function (test,probs){
+  #get the class predictions
+  preds <- get_predictions(probs)
+  #initialize list
+  performance = list()
+  #AUC
+  performance$auc = area_under_roc(probs,test)
+  #tdl
+  performance$tdl = TopDecileLift(preds,test)
+  #accuracy
+  performance$accuracy = acc(preds,test)
+  #F-measure
+  performance$F_measure = F_measure(preds,test)
+  #maximum profit
+  performance$mp = MP(probs,test)
+  return (performance)
+}
+```
+
+calibration
+
+```{r}
+partition <- function(y,p=0.5,times=1) {
+  #split up 0 and 1
+  class1_ind <- which(y=="0") #as.integer(levels(y)[1])
+  class2_ind <- which(y=="1")
+  l <- list()
+  for (i in 1:times){
+    #take subsamples for both 0 and 1
+    class1_ind_train <- sample(class1_ind, floor(p*table(y)[1]),replace=FALSE)
+    class2_ind_train <- sample(class2_ind, floor(p*table(y)[2]),replace=FALSE)
+    class1_ind_test <- class1_ind[!class1_ind %in% class1_ind_train]
+    class2_ind_test <- class2_ind[!class2_ind %in% class2_ind_train]
+    #combine 0 and 1 for both train and test
+    l[[i]] <- list(train=c(class1_ind_train,class2_ind_train),test=c(class1_ind_test,class2_ind_test))
+  }
+  return(l)
+}
+#train the calibrator
+calibrate <- function(x,y){
+  trainIND <- partition(y,p=0.8)[[1]]$train
+  xTRAIN <- x[trainIND]
+  yTRAIN <- y[trainIND,]
+  xVALIDATE <- x[-trainIND]
+  yVALIDATE <- y[-trainIND,]
+  #DETERMINE OPTIMAL NUMBER OF BREAKS 500 or less
+  AUC <- data.frame(matrix(ncol=2))
+  i <- 0
+  for (nbreaks in 2: if (length(xTRAIN) > 1000) 500 else length(xTRAIN))  {
+    #create equal frequency bins
+    x_bin <- cut(xTRAIN,breaks=nbreaks ,labels=FALSE)
+    x_mean <- data.frame(aggregate(xTRAIN,by=list(x_bin),mean)$x)
+    names(x_mean) <- "x_mean"
+    y_prop <- aggregate(as.integer(as.character(yTRAIN)),by=list(x_bin),mean)$x
+    y_prop <- cummax(y_prop)
+    if (length(unique(y_prop)) > 5) {
+      names(x_mean) <- "x"
+      rf <- randomForest(y=y_prop,x=x_mean)
+      xVALIDATE <- data.frame(xVALIDATE)
+      names(xVALIDATE) <- "x"
+      predrfCAL <- predict(object=rf, newdata=xVALIDATE)
+      i <- i + 1
+      AUC[i,1:2] <- c(performance(prediction(predrfCAL,yVALIDATE), measure="auc")@y.values[[1]],nbreaks)
+    }
+    names(AUC) <- c("AUC","nbreaks")
+  }  
+  nbreaks <- AUC$nbreaks[which.max(AUC$AUC)]
+  if (length(nbreaks) != 0) {
+    #ESTIMATE FINAL MODEL USING OPTIMAL NUMBER OF BREAKS
+    #create equal frequency bins
+    x_bin <- cut(x,breaks=nbreaks ,labels=FALSE)
+    x_mean <- data.frame(aggregate(x,by=list(x_bin),mean)$x)
+    names(x_mean) <- "x_mean"
+    y_prop <- aggregate(as.integer(as.character(y$churn)),by=list(x_bin),mean)$x
+    y_prop <- cummax(y_prop)
+    result <- list(probmapper=randomForest(y=y_prop,x=x_mean),performance=AUC,nbrbreaks=nbreaks)
+  } else {
+    result <- list(rawprobs=x)
+  }
+ return(result)
+}
+#performs the calibration
+perform_calibration <- function(object,newdata){
+  if (length(object)!=1) {
+    newdata <- data.frame(newdata)
+    names(newdata) <- "x_mean"
+    pr <- predict(object=object[[1]], newdata=newdata, type="response")
+  } else {
+    pr <- newdata
+  }
+  return(pr) 
+}
+```
+
+summarize the results (average of 5 fold cross validation)
+
+```{r}
+#function that converts result into a dataframe
+clean_results <- function(results){
+  results = list(results)
+  for (i in(1:length(results))){
+    #transform results into a dataframe
+    m1 <- matrix(results[[i]], ncol=5, byrow=TRUE)
+    results[[i]] <- as.data.frame(m1, stringsAsFactors=FALSE)
+    results[[i]] <- data.frame(apply(results[[i]], 2, function(x) as.numeric(as.character(x))))
+    results[[i]] <- data.frame(cbind(colMeans(matrix(results[[i]]$V1, nrow=5))
+                                    ,colMeans(matrix(results[[i]]$V2, nrow=5))
+                                    ,colMeans(matrix(results[[i]]$V3, nrow=5))
+                                    ,colMeans(matrix(results[[i]]$V4, nrow=5))
+                                    ,colMeans(matrix(results[[i]]$V5, nrow=5))))
+    names(results[[i]])[names(results[[i]]) == "X1"] <- "AUC"
+    names(results[[i]])[names(results[[i]]) == "X2"] <- "TDL"
+    names(results[[i]])[names(results[[i]]) == "X3"] <- "ACC"
+    names(results[[i]])[names(results[[i]]) == "X4"] <- "F-measure"
+    names(results[[i]])[names(results[[i]]) == "X5"] <- "EMPC"
+    results = results[[i]]
+  }
+  return (results)
+}
+```
+
+hyperparameter selection for single and homogeneous ensembles
+
+```{r}
+#function that performs hyperparameter selection and final predictions (holdout set)
+classification <- function(func, parameters,train,val,test){
+  if (length(parameters) > 0){
+    #perform grid search
+    power_sim <- grid_search(func, params=parameters, n.iter=1, train = train, val = val, test = test)
+    #select best model based on AUC
+    best_model = 0
+    best_performance = 0
+    for (i in (1:length(power_sim$results))){
+      if (power_sim$results[[i]][[1]]$auc > best_performance){
+        best_performance = power_sim$results[[i]][[1]]$auc
+        best_model = i
+      }
+    }
+    model_results <- power_sim$results[[best_model]]
+  }
+  else {
+    model_results <- func(train,val,test)
+  }
+  return(model_results)
+}
+```
+
+auc for heterogeneous ensembles
+
+```{r}
+#function for calculating AUC for hybrid ensembles
+evaluate <- function(string = c()) {
+  stringRepaired <- as.numeric(string)/sum(as.numeric(string))
+  weightedprediction <- as.numeric(rowSums(t(as.numeric(stringRepaired) * t(hetero_predictions_val))))
+  returnVal <- -area_under_roc(weightedprediction,val$churn)
+  return(returnVal)
+}
+```
+
+normalize weights and perform predictions
+
+```{r}
+weight_eval <- function(weight,hetero_pred_val,hetero_pred_test){
+  weight <- as.numeric(weight)/sum(as.numeric(weight))
+  weight <- ifelse(is.nan(weight),0,weight)
+  probs_val <- hetero_pred_val%*%weight
+  probs_test <- hetero_pred_test%*%weight
+  #keep track of performance
+  performance_val <- evaluation(val$churn,probs_val)
+  performance_test <- evaluation(test$churn,probs_test)
+  result <- list(performance_val,probs_val,performance_test,probs_test)
+  names(result) <- c("val_perf", "val_probs", "test_perf","test_probs")
+  return(result)
+}
+```
+
+helper functions for hill climbing
+
+```{r}
+#function to evaluate the hill climbing
+HCES_eval <- function(attribute_vector){
+  data <- hetero_predictions_val[,attribute_vector, drop = F]
+  preds <- apply(data, 1, mean)
+  perf <- area_under_roc(preds,val$churn)
+  return(perf)
+}
+# finding the optimal substet
+hces_fit <- function(x, y){
+  top_attributes <- hill.climbing.search(classifier_names, HCES_eval)
+  return(top_attributes)
+}
+# getting the predictions for a subset
+hces_pred<- function(object, x){
+  val_probs <- apply(x[,object], 1, mean)
+  return(val_probs)
+}
+#aggregating the results from the subsets
+hces_agg <- function(x, type = NULL){
+  preds <- do.call("cbind", x)
+  return(apply(preds, 1, mean))
+}
+```
+
+hyperparameter selection for heterogeneous ensembles
+
+```{r}
+#function that performs hyperparameter selection
+#and final predictions with heterogeneous ensembles (holdout set)
+hybrid_classification <- function(func, parameters,hetero_pred_val,hetero_pred_test,hetero_perf_val){
+  if (length(parameters) > 0){
+    #perform grid search
+    power_sim <- grid_search(func, params=parameters, n.iter=1,
+                             hetero_pred_val = hetero_pred_val, 
+                             hetero_pred_test = hetero_pred_test,
+                             hetero_perf_val = hetero_perf_val)
+    #select best model based on AUC
+    best_model = 0
+    best_performance = 0
+    for (i in (1:length(power_sim$results))){
+      if (power_sim$results[[i]][[1]]$auc > best_performance){
+        best_performance = power_sim$results[[i]][[1]]$auc
+        best_model = i
+      }
+    }
+    model_results <- power_sim$results[[best_model]]
+  }
+  else {
+    model_results <- func(hetero_pred_val = hetero_pred_val, 
+                          hetero_pred_test = hetero_pred_test,
+                          hetero_perf_val = hetero_perf_val)
+  }
+  return(model_results)
+}
+```
+
+### single classifiers
+
+logistic regression
+
+```{r}
+# logistic regression
+logistic_regression <- function(iter,train,val,test,lambda){
+  x <- as.matrix(train[,names(train) != "churn"])
+  y <- as.numeric(train$churn) - 1
+  # fit the model on training data
+  logit.fit = glmnet(x, y, alpha = 1, family = "binomial",lambda = lambda)
+  #get the probabilities
+  probs_val = predict(logit.fit, newx = as.matrix(val[,names(val) != "churn"]), type = "response")[,1]
+  probs_test = predict(logit.fit, newx = as.matrix(test[,names(test) != "churn"]), type = "response")[,1]
+  #calibrate
+  calibrator <-  calibrate(x=probs_val,y=val["churn"])
+  probs_val <- perform_calibration(object=calibrator, newdata=probs_val)
+  probs_test <- perform_calibration(object=calibrator, newdata=probs_test)
+  #keep track of performance
+  performance_val = evaluation(val$churn,probs_val)
+  performance_test = evaluation(test$churn,probs_test)
+  result <- list(performance_val,probs_val,performance_test,probs_test)
+  names(result) <- c("val_perf", "val_probs", "test_perf","test_probs")
+  return(result)
+}
+```
+
+decision tree
+
+```{r}
+#decision tree
+decision_tree <- function(iter,train,val,test,minbucket,prune){
+  # fit the model on training data
+  dt.fit = rpart(churn ~ ., data = train, method = 'class',
+                 control =rpart.control(minbucket = minbucket))
+  if (prune) dt.fit <- rpart::prune(dt.fit,cp=0.01) 
+  #get the probabilities
+  probs_val = as.numeric(predict(dt.fit,val, type = "prob")[,2])
+  probs_test = as.numeric(predict(dt.fit,test, type = "prob")[,2])
+  #calibrate
+  calibrator <-  calibrate(x=probs_val,y=val["churn"])
+  probs_val <- perform_calibration(object=calibrator, newdata=probs_val)
+  probs_test <- perform_calibration(object=calibrator, newdata=probs_test)
+  #keep track of performance
+  performance_val = evaluation(val$churn,probs_val)
+  performance_test = evaluation(test$churn,probs_test)
+  result <- list(performance_val,probs_val,performance_test,probs_test)
+  names(result) <- c("val_perf", "val_probs", "test_perf","test_probs")
+  return(result)
+}
+```
+
+support vector machines
+
+```{r}
+#support vector machines
+support_vector_machines <- function(iter,train,val,test,cost,gamma){
+  #fit the model on the training data
+  svm.fit = svm(formula = churn ~ . ,data = train, type = 'C-classification',
+              kernel = 'radial', probability = TRUE,
+                cost = cost, gamma = gamma)
+  #get the probabilities
+  probs_val = predict(svm.fit, newdata = val, probability = TRUE)
+  probs_val = attr(probs_val,"probabilities")[,2]
+  probs_test = predict(svm.fit, newdata = test, probability = TRUE)
+  probs_test = attr(probs_test,"probabilities")[,2]
+  #calibrate
+  calibrator <-  calibrate(x=probs_val,y=val["churn"])
+  probs_val <- perform_calibration(object=calibrator, newdata=probs_val)
+  probs_test <- perform_calibration(object=calibrator, newdata=probs_test)
+  #keep track of performance
+  performance_val = evaluation(val$churn,probs_val)
+  performance_test = evaluation(test$churn,probs_test)
+  result <- list(performance_val,probs_val,performance_test,probs_test)
+  names(result) <- c("val_perf", "val_probs", "test_perf","test_probs")
+  return(result)
+}
+```
+
+Naïve Bayes
+
+```{r}
+#Na?ve Bayes
+naive_bayes <- function(train,val,test){
+  #fit the model
+  nb.fit = naiveBayes(formula = churn ~ . ,data = train,laplace = TRUE)
+  #get the probabilities
+  probs_val = predict(nb.fit, newdata = val,type = "raw")[,2]
+  probs_test = predict(nb.fit, newdata = test,type = "raw")[,2]
+  #calibrate
+  calibrator <-  calibrate(x=probs_val,y=val["churn"])
+  probs_val <- perform_calibration(object=calibrator, newdata=probs_val)
+  probs_test <- perform_calibration(object=calibrator, newdata=probs_test)
+  #keep track of performance
+  performance_val = evaluation(val$churn,probs_val)
+  performance_test = evaluation(test$churn,probs_test)
+  result <- list(performance_val,probs_val,performance_test,probs_test)
+  names(result) <- c("val_perf", "val_probs", "test_perf","test_probs")
+  return(result)
+}
+```
+
+artificial neural network
+
+```{r}
+#Artificial neural network
+artificial_neural_network <- function(iter,train,val,test,decay,size){
+  #fit the model
+  ann.fit = nnet(formula = churn ~ ., data = train, size = size,
+                 MaxNWts = 5000, maxit = 5000, decay = decay, trace = FALSE)
+  #get the probabilities
+  probs_val = predict(ann.fit,newdata = val,type = 'raw')
+  probs_val = as.numeric(probs_val[,1])
+  probs_test = predict(ann.fit,newdata = test,type = 'raw')
+  probs_test = as.numeric(probs_test[,1])
+  #calibrate
+  calibrator <-  calibrate(x=probs_val,y=val["churn"])
+  probs_val <- perform_calibration(object=calibrator, newdata=probs_val)
+  probs_test <- perform_calibration(object=calibrator, newdata=probs_test)
+  #keep track of performance
+  performance_val = evaluation(val$churn,probs_val)
+  performance_test = evaluation(test$churn,probs_test)
+  result <- list(performance_val,probs_val,performance_test,probs_test)
+  names(result) <- c("val_perf", "val_probs", "test_perf","test_probs")
+  return(result)
+}
+```
+
+logit leaf model
+
+```{r}
+#LLM
+logit_leaf <- function(iter, train,val,test,threshold_pruning, nbr_obs_leaf){
+
+  #Since LLM does not work well with class imbalance:     undersample
+  indmin <- which(train$churn ==    names(which.min(table(train$churn))))
+  whichmax <- which(train$churn == names(which.max(table(train$churn))))
+  indmax <- sample(whichmax, size = length(indmin), replace = FALSE)
+  train_llm <- train[c(indmin, indmax),]
+
+  #Try catch llm, first try with undersampling, if this does not work, try normal
+  llm.fit = tryCatch({
+        #Get X and Y
+        X <- train_llm[,names(train) != "churn"]
+        y <- train_llm$churn
+        # fit the model on training data
+        fit = llm(X,y, threshold_pruning, round(nbr_obs_leaf,0))
+        return(fit)
+      }, 
+      error = function (e) {
+        message('An error occured, catching mistake by running on original training data')
+        #Get X and Y
+        X <- train[,names(train) != "churn"]
+        y <- train$churn
+        # fit the model on training data
+        fit = llm(X,y, threshold_pruning, round(nbr_obs_leaf,0))
+        return(fit)
+      })
+  
+  #get the probabilities
+  probs_val = predict.llm(llm.fit,val[,names(val) != "churn"])[,1]
+  probs_test = predict.llm(llm.fit,test[,names(test) != "churn"])[,1]
+  #calibrate
+  calibrator <-  calibrate(x=probs_val,y=val["churn"])
+  probs_val <- perform_calibration(object=calibrator, newdata=probs_val)
+  probs_test <- perform_calibration(object=calibrator, newdata=probs_test)
+  #keep track of performance
+  performance_val = evaluation(val$churn,probs_val)
+  performance_test = evaluation(test$churn,probs_test)
+  result <- list(performance_val,probs_val,performance_test,probs_test)
+  names(result) <- c("val_perf", "val_probs", "test_perf","test_probs")
+  return(result)
+}
+```
+
+
+### Homogeneous ensembles
+
+bagging
+
+```{r}
+#bagging
+bag <- function(iter,train,val,test,nbagg){
+  #fit the model
+  bag.fit = bagging(formula = churn ~ . ,data = train, nbagg = nbagg)
+  #get the probabilities
+  probs_val = as.numeric(predict(bag.fit, newdata = val,type="prob")[,2])
+  probs_test = as.numeric(predict(bag.fit, newdata = test,type="prob")[,2])
+  #calibrate
+  calibrator <-  calibrate(x=probs_val,y=val["churn"])
+  probs_val <- perform_calibration(object=calibrator, newdata=probs_val)
+  probs_test <- perform_calibration(object=calibrator, newdata=probs_test)
+  #keep track of performance
+  performance_val = evaluation(val$churn,probs_val)
+  performance_test = evaluation(test$churn,probs_test)
+  result <- list(performance_val,probs_val,performance_test,probs_test)
+  names(result) <- c("val_perf", "val_probs", "test_perf","test_probs")
+  return(result)
+}
+```
+
+uniform subsampled ensemble
+
+```{r}
+#uniform subsampled ensemble
+USE <- function(iter,train,val,test,n){
+  #make n uniform samples
+  train_1 = train[train$churn == "1",]
+  train_0 = train[train$churn == "0",]
+  ind_x = sample(rep(1:n,each = nrow(train_1)/n))
+  x = lapply(split(1:nrow(train_1),ind_x), function(i) train_1[i,])
+  ind_y = sample(rep(1:n,each = nrow(train_0)/n))
+  y = lapply(split(1:nrow(train_1),ind_y), function(i) train_0[i,])
+  #train each model
+  probs_val = list()
+  probs_test = list()
+  for (i in 1:n){
+    #fit the model on the training data
+    train_all = rbind(x[[i]],y[[i]])
+    svm.fit = svm(formula = churn ~ . ,data = train_all, type = 'C-classification',kernel = 'radial', probability=TRUE)
+    #get the probabilities
+    svm.probs_val = predict(svm.fit, newdata = val, probability = TRUE)
+    probs_val[[i]] = attr(svm.probs_val,"probabilities")[,1]
+    svm.probs_test = predict(svm.fit, newdata = test, probability = TRUE)
+    probs_test[[i]] = attr(svm.probs_test,"probabilities")[,1]
+    }
+  #average the probabilities from the n classifiers
+  svm.probs_val <- matrix(unlist(probs_val), ncol = n)
+  probs_val = rowMeans(svm.probs_val, na.rm = FALSE, dims = 1)
+  svm.probs_test <- matrix(unlist(probs_test), ncol = n)
+  probs_test = rowMeans(svm.probs_test, na.rm = FALSE, dims = 1)
+  #calibrate
+  calibrator <-  calibrate(x=probs_val,y=val["churn"])
+  probs_val <- perform_calibration(object=calibrator, newdata=probs_val)
+  probs_test <- perform_calibration(object=calibrator, newdata=probs_test)
+  #keep track of performance
+  performance_val = evaluation(val$churn,probs_val)
+  performance_test = evaluation(test$churn,probs_test)
+  result <- list(performance_val,probs_val,performance_test,probs_test)
+  names(result) <- c("val_perf", "val_probs", "test_perf","test_probs")
+  return(result)
+}
+```
+
+random forest
+
+```{r}
+#random forest
+rf <- function(iter,train,val,test,ntrees){
+  rf.fit <- randomForest(formula = churn ~ ., data = train, ntree = ntrees)
+  probs_val <- as.numeric(predict(rf.fit, newdata = val,type="prob")[,2])
+  probs_test <- as.numeric(predict(rf.fit, newdata = test,type="prob")[,2])
+  #calibrate
+  calibrator <-  calibrate(x=probs_val,y=val["churn"])
+  probs_val <- perform_calibration(object=calibrator, newdata=probs_val)
+  probs_test <- perform_calibration(object=calibrator, newdata=probs_test)
+  #keep track of performance
+  performance_val = evaluation(val$churn,probs_val)
+  performance_test = evaluation(test$churn,probs_test)
+  result <- list(performance_val,probs_val,performance_test,probs_test)
+  names(result) <- c("val_perf", "val_probs", "test_perf","test_probs")
+  return(result)
+}
+```
+
+improved balanced random forest
+
+```{r}
+#improved balanced random forest
+ibrf <- function(iter,train,val,test,ntrees,m,d){
+  n <- nrow(train)
+  D_min <- train[train$churn == 0,]
+  D_plus <- train[train$churn == 1,]
+  probs_val = list()
+  probs_test = list()
+  for (i in 1:ntrees){
+    alpha <- runif(1, m-d/2, m+d/2)
+    w_neg <- 1-alpha
+    w_pos <- alpha
+    neg <- dplyr::sample_n(D_min,size = n*alpha, replace = TRUE)
+    pos <- dplyr::sample_n(D_plus,size = n*(1-alpha), replace = TRUE)
+    temp <- do.call(rbind,list(neg,pos))
+    tree <- randomForest(formula = churn ~ ., data = temp,classwt = c(w_neg,w_pos),ntree = 1)
+    probs_val[[i]] <- predict(tree, newdata = val,type="prob")[,2]
+    probs_test[[i]] <- predict(tree, newdata = test,type="prob")[,2]
+  }
+  #average the probabilities from the trees
+  ibrf.probs_val <- matrix(unlist(probs_val), ncol = ntrees)
+  probs_val = rowMeans(ibrf.probs_val, na.rm = FALSE, dims = 1)
+  ibrf.probs_test <- matrix(unlist(probs_test), ncol = ntrees)
+  probs_test = rowMeans(ibrf.probs_test, na.rm = FALSE, dims = 1)
+  #calibrate
+  calibrator <-  calibrate(x=probs_val,y=val["churn"])
+  probs_val <- perform_calibration(object=calibrator, newdata=probs_val)
+  probs_test <- perform_calibration(object=calibrator, newdata=probs_test)
+  #keep track of performance
+  performance_val = evaluation(val$churn,probs_val)
+  performance_test = evaluation(test$churn,probs_test)
+  result <- list(performance_val,probs_val,performance_test,probs_test)
+  names(result) <- c("val_perf", "val_probs", "test_perf","test_probs")
+  return(result)
+}
+```
+
+adaboost
+
+```{r}
+#adaboost
+ada_boost <- function(iter,train,val,test,niters){
+  ada.fit <- adaboost(data = train,formula = churn ~ ., 
+                      tree_depth = 3, nIter = niters, verbose = FALSE,
+                      control = NULL)
+  #get the probabilities
+  probs_val <- predict(ada.fit, newdata = val,type="prob")[4][[1]][,2]
+  probs_test <- predict(ada.fit, newdata = test,type="prob")[4][[1]][,2]
+  #calibrate
+  calibrator <-  calibrate(x=probs_val,y=val["churn"])
+  probs_val <- perform_calibration(object=calibrator, newdata=probs_val)
+  probs_test <- perform_calibration(object=calibrator, newdata=probs_test)
+  #keep track of performance
+  performance_val = evaluation(val$churn,probs_val)
+  performance_test = evaluation(test$churn,probs_test)
+  result <- list(performance_val,probs_val,performance_test,probs_test)
+  names(result) <- c("val_perf", "val_probs", "test_perf","test_probs")
+  return(result)
+}
+```
+
+extreme gradient boosting
+
+```{r}
+#xgboost
+xg_boost <- function(iter,train,val,test,niters,depth,learning){
+  X <- as.matrix(train[,names(train) != "churn"])
+  y <- as.numeric(train$churn) -1
+  xgb.fit <- xgboost(data = X, label = y, max.depth = depth, eta = learning, nrounds = niters,
+                     objective = "binary:logistic",verbose = 0)
+  val_2 <- as.matrix(val[,names(val) != "churn"])
+  test_2 <- as.matrix(test[,names(test) != "churn"])
+  #get the probabilities
+  probs_val <- predict(xgb.fit,val_2)
+  probs_test <- predict(xgb.fit,test_2)
+  #calibrate
+  calibrator <-  calibrate(x=probs_val,y=val["churn"])
+  probs_val <- perform_calibration(object=calibrator, newdata=probs_val)
+  probs_test <- perform_calibration(object=calibrator, newdata=probs_test)
+  #keep track of performance
+  performance_val = evaluation(val$churn,probs_val)
+  performance_test = evaluation(test$churn,probs_test)
+  result <- list(performance_val,probs_val,performance_test,probs_test)
+  names(result) <- c("val_perf", "val_probs", "test_perf","test_probs")
+  return(result)
+}
+```
+
+catboost
+```{r}
+cat_boost <- function(iter,train,val,test,niters,depth,learning){
+  #fit
+  train_pool <- catboost.load_pool(data = data.matrix(train[,names(train) != "churn"]), 
+                                 label = as.numeric(as.character(train$churn)))
+  val_pool <- catboost.load_pool(data = data.matrix(val[,names(val) != "churn"]), 
+                                 label = as.numeric(as.character(val$churn)))
+  test_pool <- catboost.load_pool(data = data.matrix(test[,names(test) != "churn"]), 
+                                 label = as.numeric(as.character(test$churn)))
+  
+  params = list(loss_function = 'Logloss', 
+              iterations = niters, 
+              depth = depth, 
+              learning_rate = learning)
+  
+  catboost.fit <- catboost.train(train_pool,  NULL,
+                                 params = params)
+  
+  #get the probabilities
+  probs_val <- catboost.predict(catboost.fit, val_pool)
+  probs_test <- catboost.predict(catboost.fit, test_pool)
+  #calibrate
+  calibrator <-  calibrate(x=probs_val,y=val["churn"])
+  probs_val <- perform_calibration(object=calibrator, newdata=probs_val)
+  probs_test <- perform_calibration(object=calibrator, newdata=probs_test)
+  #keep track of performance
+  performance_val = evaluation(val$churn,probs_val)
+  performance_test = evaluation(test$churn,probs_test)
+  result <- list(performance_val,probs_val,performance_test,probs_test)
+  names(result) <- c("val_perf", "val_probs", "test_perf","test_probs")
+  return(result)
+}
+```
+
+lightgbm
+
+```{r}
+light_gbm <- function(iter,train,val,test,niters,depth,learning){
+  X <- as.matrix(train[,names(train) != "churn"])
+  y <- as.numeric(train$churn) -1
+  params <- list(num_leaves = depth,
+               learning_rate = learning,
+               objective = "binary", 
+               num_iterations = niters
+               )
+  lgbm.fit <- lightgbm(data = X, params = params, label = y,  nrounds = 100L)
+  val_2 <- as.matrix(val[,names(val) != "churn"])
+  test_2 <- as.matrix(test[,names(test) != "churn"])
+  #get the probabilities
+  probs_val <- predict(lgbm.fit,val_2)
+  probs_test <- predict(lgbm.fit,test_2)
+  #calibrate
+  calibrator <-  calibrate(x=probs_val,y=val["churn"])
+  probs_val <- perform_calibration(object=calibrator, newdata=probs_val)
+  probs_test <- perform_calibration(object=calibrator, newdata=probs_test)
+  #keep track of performance
+  performance_val = evaluation(val$churn,probs_val)
+  performance_test = evaluation(test$churn,probs_test)
+  result <- list(performance_val,probs_val,performance_test,probs_test)
+  names(result) <- c("val_perf", "val_probs", "test_perf","test_probs")
+  return(result)
+}
+```
+
+
+stochastic gradient boosting
+
+```{r}
+#stochastic gradient boosting
+sgb <- function(iter,train,val,test,niters,depth,shrinkage){
+  train$churn <- as.numeric(as.character(train$churn)) 
+  sgb.fit <- gbm::gbm(churn ~ ., data = train, distribution = "bernoulli",
+                 bag.fraction = 0.5, n.trees = niters, interaction.depth =depth,
+                 shrinkage = shrinkage, n.minobsinnode = 1)
+  probs_val <- predict(sgb.fit,newdata = val, type = "response")
+  probs_test <- predict(sgb.fit,newdata = test, type = "response")
+  #calibrate
+  calibrator <-  calibrate(x=probs_val,y=val["churn"])
+  probs_val <- perform_calibration(object=calibrator, newdata=probs_val)
+  probs_test <- perform_calibration(object=calibrator, newdata=probs_test)
+  #keep track of performance
+  performance_val = evaluation(val$churn,probs_val)
+  performance_test = evaluation(test$churn,probs_test)
+  result <- list(performance_val,probs_val,performance_test,probs_test)
+  names(result) <- c("val_perf", "val_probs", "test_perf","test_probs")
+  return(result)
+}
+```
+
+logistic model tree
+
+```{r}
+#logistic model tree
+lmt <- function(iter,train,val,test,niters){
+  x <- train[,names(train) != "churn"]
+  y <- as.numeric(train$churn) - 1
+  #train the tree
+  tree <- glmtree(x,y,K = 5,iterations = niters, criterion = "aic",
+                   ctree_controls = partykit::ctree_control(alpha = 0.1, minbucket = 100, maxdepth = 3))
+  #get the probabilites
+  train$c_map <- factor(apply(predict(tree@best.tree$tree,train,type="prob"),1,function(p) names(which.max(p))))
+  val$c_map <- factor(apply(predict(tree@best.tree$tree,val,type="prob"),1,function(p) names(which.max(p))))
+  test$c_map <- factor(apply(predict(tree@best.tree$tree,test,type="prob"),1,function(p) names(which.max(p))))
+  pred_val = matrix(0, nrow = nrow(val), ncol = 1)
+  pred_test = matrix(0, nrow = nrow(test), ncol = 1)
+  for (j in 1:nlevels(train$c_map)) {
+    pred_val[val$c_map==levels(train$c_map)[j]] = predict(tree@best.tree$glms[[j]], val[val$c_map==levels(train$c_map)[j],], type="response")
+    pred_test[test$c_map==levels(train$c_map)[j]] = predict(tree@best.tree$glms[[j]], test[test$c_map==levels(train$c_map)[j],], type="response")
+  }
+  probs_val <- pred_val[,1]
+  probs_test <- pred_test[,1]
+  #calibrate
+  calibrator <-  calibrate(x=probs_val,y=val["churn"])
+  probs_val <- perform_calibration(object=calibrator, newdata=probs_val)
+  probs_test <- perform_calibration(object=calibrator, newdata=probs_test)
+  #keep track of performance
+  performance_val = evaluation(val$churn,probs_val)
+  performance_test = evaluation(test$churn,probs_test)
+  result <- list(performance_val,probs_val,performance_test,probs_test)
+  names(result) <- c("val_perf", "val_probs", "test_perf","test_probs")
+  return(result)
+}
+```
+
+random subspace method
+
+```{r}
+#random subspace method
+rsm <- function(iter,train,val,test,ntrees){
+  rsm.fit<-caret:: bag(x=train[,names(train) != "churn"], y=train$churn,B = ntrees,
+                       vars = round(sqrt(ncol(train)-1)), 
+                       bagControl = bagControl(fit = ctreeBag$fit,
+                                               predict = ctreeBag$pred,
+                                               aggregate = ctreeBag$aggregate), 
+                       trControl=trainControl(method = 'none'))
+  probs_val <- predict(rsm.fit,newdata = val[,names(val) != "churn"],type = "prob")[,2]
+  probs_test <- predict(rsm.fit,newdata = test[,names(test) != "churn"],type = "prob")[,2]
+  #calibrate
+  calibrator <-  calibrate(x=probs_val,y=val["churn"])
+  probs_val <- perform_calibration(object=calibrator, newdata=probs_val)
+  probs_test <- perform_calibration(object=calibrator, newdata=probs_test)
+  #keep track of performance
+  performance_val <- evaluation(val$churn,probs_val)
+  performance_test <- evaluation(test$churn,probs_test)
+  result <- list(performance_val,probs_val,performance_test,probs_test)
+  names(result) <- c("val_perf", "val_probs", "test_perf","test_probs")
+  return(result)
+}
+```
+
+rotation forest
+
+```{r}
+#rotation forest
+rotfor <- function(iter,train,val,test,n_predictors,n_members){
+  rotfor.fit <- rotationForest(train[,names(train) != "churn"], train$churn,
+                               K=n_predictors,L = n_members, verbose = FALSE)
+  probs_val <- predict(object = rotfor.fit, newdata = val[,names(val) != "churn"], type = "response")
+  probs_test <- predict(object = rotfor.fit, newdata = test[,names(test) != "churn"], type = "response")
+  #calibrate
+  calibrator <-  calibrate(x=probs_val,y=val["churn"])
+  probs_val <- perform_calibration(object=calibrator, newdata=probs_val)
+  probs_test <- perform_calibration(object=calibrator, newdata=probs_test)
+  #keep track of performance
+  performance_val = evaluation(val$churn,probs_val)
+  performance_test = evaluation(test$churn,probs_test)
+  result <- list(performance_val,probs_val,performance_test,probs_test)
+  names(result) <- c("val_perf", "val_probs", "test_perf","test_probs")
+  return(result)
+}
+```
+
+alternating decision trees
+
+```{r}
+#alternating decision trees
+adt <- function(iter,train,val,test,niters){
+  ADT <- make_Weka_classifier("weka/classifiers/trees/ADTree")
+  adt.fit <- ADT(churn ~ ., data=train,control = Weka_control(B = niters))
+  probs_val <- predict(adt.fit, val[,names(val) != "churn"], type="prob")[,2]
+  probs_test <- predict(adt.fit, test[,names(test) != "churn"], type="prob")[,2]
+  #calibrate
+  calibrator <-  calibrate(x=probs_val,y=val["churn"])
+  probs_val <- perform_calibration(object=calibrator, newdata=probs_val)
+  probs_test <- perform_calibration(object=calibrator, newdata=probs_test)
+  #keep track of performance
+  performance_val <- evaluation(val$churn,probs_val)
+  performance_test <- evaluation(test$churn,probs_test)
+  result <- list(performance_val,probs_val,performance_test,probs_test)
+  names(result) <- c("val_perf", "val_probs", "test_perf","test_probs")
+  return(result)
+}
+```
+
+
+rule-based ensemble
+
+```{r}
+rule_ens <- function(train, val, test){
+  pre.fit <- pre(churn ~ ., data=train)
+  probs_val <- predict(pre.fit, val[,names(val) != "churn"], type="response")
+  probs_test <- predict(pre.fit, test[,names(test) != "churn"], type="response")
+  #calibrate
+  calibrator <-  calibrate(x=probs_val,y=val["churn"])
+  probs_val <- perform_calibration(object=calibrator, newdata=probs_val)
+  probs_test <- perform_calibration(object=calibrator, newdata=probs_test)
+  #keep track of performance
+  performance_val <- evaluation(val$churn,probs_val)
+  performance_test <- evaluation(test$churn,probs_test)
+  result <- list(performance_val,probs_val,performance_test,probs_test)
+  names(result) <- c("val_perf", "val_probs", "test_perf","test_probs")
+  return(result)
+} 
+```
+
+
+### Heterogeneous ensembles
+
+genetic algorithm
+
+```{r}
+#genetic algorithm
+genetic_algorithm <- function(iter,hetero_pred_val,hetero_pred_test,hetero_perf_val,iters,popSize,mut){
+  ga.fit <- rbga(stringMin=rep(0, ncol(hetero_pred_val)), 
+                 stringMax=rep(1, ncol(hetero_pred_val)),
+                 popSize = popSize, 
+                 iters = iters, 
+                 mutationChance = if(mut== 0.033) mut else 1/popSize,
+                 elitism=max(1, round(popSize*0.05)),
+                 evalFunc = evaluate)
+  weightsRBGA <- ga.fit$population[which.min(ga.fit$evaluations),]
+  weight <- weightsRBGA
+  #keep track of performance
+  result <- weight_eval(weight, hetero_pred_val,hetero_pred_test)
+  return(result) 
+}
+```
+
+hill climbing with bagging
+
+```{r}
+# HCES with bagging
+HCES_bag <- function(iter,hetero_pred_val,hetero_pred_test,hetero_perf_val,niters){
+  bagCtrl = bagControl(fit =  hces_fit,
+                       predict = hces_pred,
+                       aggregate = hces_agg, 
+                       oob = FALSE)
+  fit <-caret::bag(x = as.data.frame(hetero_pred_val),
+                    y = as.numeric(as.character(val$churn)), B = niters,
+                    bagControl = bagCtrl)
+  probs_val <- predict(fit, as.data.frame(hetero_pred_val))
+  probs_test <- predict(fit, as.data.frame(hetero_pred_test))
+  #keep track of performance
+  performance_val <- evaluation(val$churn,probs_val)
+  performance_test <- evaluation(test$churn,probs_test)
+  result <- list(performance_val,probs_val,performance_test,probs_test)
+  names(result) <- c("val_perf", "val_probs", "test_perf","test_probs")
+  return(result)
+}
+```
+
+simple average
+
+```{r}
+#simple average
+simple_average <- function(iter,hetero_pred_val,hetero_pred_test,hetero_perf_val){
+  probs_val <- rowMeans(hetero_pred_val)
+  probs_test <- rowMeans(hetero_pred_test)
+  #keep track of performance
+  performance_val <- evaluation(val$churn,probs_val)
+  performance_test <- evaluation(test$churn,probs_test)
+  result <- list(performance_val,probs_val,performance_test,probs_test)
+  names(result) <- c("val_perf", "val_probs", "test_perf","test_probs")
+  return(result)
+}
+```
+
+weighted average
+
+```{r}
+#weighted average
+weighted_average <- function(iter,hetero_pred_val,hetero_pred_test,hetero_perf_val){
+  weight <- hetero_perf_val
+  #keep track of performance
+  result <- weight_eval(weight, hetero_pred_val,hetero_pred_test)
+  return(result)
+}
+```
+
+stacking
+```{r}
+#use the predictions as input for a random forest model (do it for both val and test)
+stacking <- function(iter,hetero_pred_val,hetero_pred_test,hetero_perf_val) {
+  blender <- randomForest(x = hetero_pred_val, y = val$churn, ntree = 500)
+  probs_test <- predict(blender,hetero_pred_test, type = 'prob')[,2]
+  performance_test <- evaluation(test$churn,probs_test)
+  result <- list(performance_test,probs_test)
+  names(result) <- c("test_perf","test_probs")
+  return(result)
+}
+
+```
+
+non-negative binomial likelihood
+
+```{r}
+#non-negative binomial likelihood
+nnbl <- function(iter,hetero_pred_val,hetero_pred_test,hetero_perf_val){
+  trimLogit <- function(x, trim=0.00001) {
+    x[x < trim] <- trim
+    x[x > (1-trim)] <- (1-trim)
+    foo <- log(x/(1-x))
+    return(foo)
+  }
+  .NNloglik <- function(x, y,  start = rep(0, ncol(x))) {
+    # adapted from MASS pg 445
+    #fmin <- function(beta, X, y) {
+     # p <- plogis(crossprod(t(X), beta))
+      #-sum(2 *  ifelse(y, log(p), log(1-p)))
+      #if (sum(is.infinite(p))) p <- 0.5
+    #}
+    lgtreg <- function(beta, X, y) 
+      { 
+       eta <- exp(beta[1] + beta[2]*X) 
+       p <- eta/(1+eta) 
+       p <- ifelse(p >= (1-.001),
+                      (1-.001), p)
+       ll <- -sum(ifelse(y,log(p),log(1-p)))
+       if (is.infinite(ll)) return(0.01) else return(ll) # This is the log-likelihood 
+       }
+    fmin <- function(beta, X, y) {
+      p <- plogis(X %*% beta)
+      # improvement over Venables and Ripley by avoiding 1
+      # note that 1-plogis(37) = 0, whereas plogis(-710) = 0
+      p <- ifelse(p >= (1-.001), test =
+                      (1-.001), p)
+        return(-sum(2*ifelse(y, log(p), log(1-p))))
+      }
+    gmin <- function(beta, X, y) {
+      eta <- X %*% beta; p <- plogis(eta)
+    p <- ifelse(p >= (1-.00001),
+                (1-.00001), p)
+    return(-2*matrix(dlogis(eta)*ifelse(y, 1/p, -1/(1-p)),
+                     1) %*% X)
+    }
+    fit <- optim(start, lgtreg, gmin, X = x, y = y,  method = "L-BFGS-B", lower = 0.001)
+    invisible(fit)
+  }
+  tempZ <- trimLogit(hetero_pred_val)
+  fit.nnloglik <- .NNloglik(x = as.matrix(tempZ), y = as.integer(as.character(val$churn)))
+  initCoef <- fit.nnloglik$par
+  initCoef[initCoef < 0] <- 0.0
+  initCoef[is.na(initCoef)] <- 0.0
+  weight <- initCoef
+  #keep track of performance
+  result <- weight_eval(weight, hetero_pred_val,hetero_pred_test)
+  return(result)
+}
+```
+
+Goldfarb-Idnani Non-Negative Least Squares
+
+```{r}
+#Goldfarb-Idnani Non-Negative Least Squares
+ginnls <- function(iter,hetero_pred_val,hetero_pred_test,hetero_perf_val){
+  
+  .NNLS <- function(x, y) {
+    
+    D <- t(x) %*% x
+    d <- t(t(y) %*% x)
+    A <- diag(ncol(x))
+    b <- rep(0, ncol(x))
+    fit <- solve.QP(Dmat = nearPD(D)$mat, dvec = d, Amat = t(A), bvec = b, meq=0)
+    invisible(fit)
+  }
+  fit.nnls <- .NNLS(x = as.matrix(hetero_pred_val), y = as.integer(as.character(val$churn)))
+  initCoef <- fit.nnls$solution
+  initCoef[initCoef < 0] <- 0.0
+  initCoef[is.na(initCoef)] <- 0.0
+  weight <- initCoef
+  #keep track of performance
+  result <- weight_eval(weight, hetero_pred_val,hetero_pred_test)
+  return(result)
+}
+```
+
+Lawson-Hanson Non-Negative Least Squares
+
+```{r}
+#Lawson-Hanson Non-Negative Least Squares
+lhnnls <- function(iter,hetero_pred_val,hetero_pred_test,hetero_perf_val){
+  #adapted from Superlearner package  
+  # compute coef
+  val_real <- as.integer(as.character(val$churn))
+  fit.nnls <- nnls(as.matrix(hetero_pred_val), val_real)
+  initCoef <- fit.nnls$x
+  initCoef[is.na(initCoef)] <- 0.0
+  weight <- initCoef
+  #keep track of performance
+  result <- weight_eval(weight, hetero_pred_val,hetero_pred_test)
+  return(result)
+}
+```
+
+differential evolution
+
+```{r}
+#differential evolution
+de <- function(iter,hetero_pred_val,hetero_pred_test,hetero_perf_val,cr,pop_size,n_gen){
+  algo <- list( nP = pop_size, 
+                nG = n_gen, 
+                F = 0.9314, 
+                CR = cr, 
+                min = rep(0, ncol(hetero_pred_val)),
+                max = rep(1, ncol(hetero_pred_val)),
+                minmaxConstr=TRUE,
+                repair = NULL,
+                pen = NULL,
+                printBar = FALSE,
+                printDetail = FALSE,
+                loopOF = TRUE, 
+                loopPen = TRUE, 
+                loopRepair = TRUE, 
+                storeF=FALSE)
+  weight <- DEopt(OF = evaluate,algo = algo)
+  weight <- weight$xbest
+  #keep track of performance
+  result <- weight_eval(weight, hetero_pred_val,hetero_pred_test)
+  return(result)
+}
+```
+
+particle swarm optimization
+
+```{r}
+#particle swarm optimization
+pso <- function(iter,hetero_pred_val,hetero_pred_test,hetero_perf_val,maxit,s){
+  psoptim.results <- psoptim(par=rep((1/ncol(hetero_pred_val)),ncol(hetero_pred_val)),
+                            fn=evaluate,
+                            lower=rep(0, ncol(hetero_pred_val)),
+                            upper=rep(1, ncol(hetero_pred_val)),
+                            control=list(maxit= maxit, 
+                                         maxf=Inf, 
+                                         abstol= -Inf,
+                                         reltol=0,
+                                         s=s,
+                                         k=3,
+                                         p=1-(1-1/s)^3, 
+                                         w=1/(2*log(2)),
+                                         c.p=0.5+log(2),
+                                         c.g= 0.5+log(2),
+                                         type="SPSO2011")
+  )
+  weight <- psoptim.results$par
+  #keep track of performance
+  result <- weight_eval(weight, hetero_pred_val,hetero_pred_test)
+  return(result)
+}
+```
+
+generalized simmulated annealing
+
+```{r}
+#generalized simmulated annealing
+gsa <- function(iter,hetero_pred_val,hetero_pred_test,hetero_perf_val,maxit,temperature,maxcall,visit,accept){
+  GenSA.results <- GenSA(par=rep((1/ncol(hetero_pred_val)),ncol(hetero_pred_val)),lower=rep(0, ncol(hetero_pred_val)),
+                         upper=rep(1, ncol(hetero_pred_val)), 
+                         fn=evaluate, control=list(maxit=maxit,
+                                                   temperature=temperature,
+                                                   max.call=maxcall,
+                                                   visiting.param=visit,
+                                                   acceptance.param=accept))
+  weight <- GenSA.results$par
+  #keep track of performance
+  result <- weight_eval(weight, hetero_pred_val,hetero_pred_test)
+  return(result)
+}
+```
+
+memetic algorithm
+
+```{r}
+#memetic algorithm
+ma <- function(iter,hetero_pred_val,hetero_pred_test,hetero_perf_val,popsize,ls,istep,effort,alpha,threshold){
+  malschains.results <-malschains(fn=evaluate, 
+                                         lower=rep(0, ncol(hetero_pred_val)),
+                                         upper=rep(1, ncol(hetero_pred_val)),
+                                         control=malschains.control(popsize=popsize,
+                                                                    ls=ls, 
+                                                                    istep= istep, 
+                                                                    effort=effort, 
+                                                                    alpha=alpha,
+                                                                    threshold= threshold,
+                                                                    optimum=-1),
+                                         maxEvals=300)
+  weight <- malschains.results$sol
+  #keep track of performance
+  result <- weight_eval(weight, hetero_pred_val,hetero_pred_test)
+  return(result)
+}
+```
+
+self organizing migrating maps
+
+```{r}
+#self organizing migrating maps
+soma_own <- function(iter,hetero_pred_val,hetero_pred_test,hetero_perf_val,
+                     pathLength,stepLength,perturbationChance,minAbsoluteSep,minRelativeSep,
+                     nMigrations,populationSize){
+  soma.results <- soma(evaluate,
+                       list(min=rep(0, ncol(hetero_pred_val)),max=rep(1, ncol(hetero_pred_val))),
+                       list(pathLength=pathLength,
+                            stepLength=stepLength,
+                            perturbationChance=perturbationChance,
+                            minAbsoluteSep=minAbsoluteSep,
+                            minRelativeSep=minRelativeSep,
+                            nMigrations=nMigrations,
+                            populationSize=populationSize))
+  weight <- soma.results$population[,which.min(soma.results$cost)]
+  #keep track of performance
+  result <- weight_eval(weight, hetero_pred_val,hetero_pred_test)
+  return(result)
+}
+```
+
+## prediction loop
+
+list all single classifiers and homogeneous ensemble names
+
+```{r}
+classifier_names <- c("LR","DT","SVM","NB","ANN", "LLM",
+                      "BAG","USE","RF","IBRF",
+                      "ADA","XGB","CATB","LGBM","SGB",
+                      "LMT","RSM","ROTFOR","ADT", "PRE")
+```
+
+initalize vectors (do it in the loop)
+
+initialize progress bar
+
+```{r}
+#progress bar
+i = 0
+total = length(all_data)*5
+pb <- winProgressBar(title = "progress bar", min = 0,
+                     max = total, width = 300)
+```
+
+Prediction loop. Note that this can take a while. Researchers are advised to to things in parallel or open several R sessions for each data set. 
+
+```{r}
+#loop over all datasets
+for (i_data in 1:length(all_data)){
+  #Initialize the result slots
+  #single classifiers
+  logit_results = c()
+  decision_tree_results = c()
+  support_vector_machines_results = c()
+  naive_bayes_results = c()
+  artificial_neural_network_results = c()
+  llm_results = c()
+  #homogeneous ensembles
+  bagging_results = c()
+  USE_results = c()
+  rf_results = c()
+  ibrf_results = c()
+  adaboost_results = c()
+  xgboost_results = c()
+  catboost_results = c()
+  lgbm_results = c()
+  sgb_results = c()
+  lmt_results = c()
+  rsm_results = c()
+  rotfor_results = c()
+  adt_results = c()
+  pre_results = c()
+  #heterogeneous ensembles
+  ga_results = c()
+  HCES_bag_results = c()
+  simple_average_results = c()
+  weighted_average_results = c()
+  stacking_results = c()
+  nnbl_results = c()
+  ginnls_results = c()
+  lhnnls_results = c()
+  de_results = c()
+  pso_results = c()
+  gsa_results = c()
+  ma_results = c()
+  soma_results = c()
+  
+  #create folds
+  folds <- cross_validation_folds(all_data[[i_data]])
+  print(paste("data set:", i_data, "", names(all_data)[i_data]))
+  #5 fold cross validation
+  for (i_fold in 1:5){
+    print(paste("fold:", i_fold))
+    #Segment the data by fold  
+    testIndexes <- which(folds==i_fold,arr.ind=TRUE)
+    test <- all_data[[i_data]][testIndexes, ]
+    train_big <- all_data[[i_data]][-testIndexes, ]
+    
+    #make validation set and smaller train set
+    allind <- sample(x=1:nrow(train_big),size=nrow(train_big))
+    trainind <- allind[1:round(length(allind)*0.50)]
+    valind <- allind[(round(length(allind)*(0.50)+1)):length(allind)]
+    train <- train_big[trainind,]
+    val <- train_big[valind,]
+    
+    if(i_data == 11) {
+          #Scaling does not really work for cell2cell data, so do it without scaling for this data set
+          filtered <- feature_selection_fisher(train,val,test)
+          train <- filtered[[1]]
+          val <- filtered[[3]]
+          test <- filtered[[2]]
+          
+          train <- train %>% select(-churn) %>% 
+  mutate(across(everything(), as.numeric)) %>% 
+  bind_cols(., churn = train$churn)
+test <- test %>% select(-churn) %>% 
+  mutate(across(everything(), as.numeric)) %>% 
+  bind_cols(., churn = test$churn)
+val <- val %>% select(-churn) %>% 
+  mutate(across(everything(), as.numeric)) %>% 
+  bind_cols(., churn = val$churn)
+
+    } else {
+          #normalize features
+          train.scale <- preProcess(train, method=c("range"))
+          train <- predict(train.scale, train)
+          val <- predict(train.scale, val)
+          test <- predict(train.scale, test)
+    
+          #feature selection
+          filtered <- feature_selection_fisher(train,val,test)
+          train <- filtered[[1]]
+          val <- filtered[[3]]
+          test <- filtered[[2]]
+    }
+    
+    ### perform predictions on single classifiers
+      logit_outcome = classification(logistic_regression,list(lambda = as.numeric(2^seq(-14,14,2))), train,val,test)  
+      logit_results = c(logit_results,logit_outcome$test_perf)#1
+      dt_outcome = classification(decision_tree,
+                                  list(prune = c(FALSE,TRUE) 
+                                       ,minbucket = nrow(train)*c(0.01,0.025,0.05,0.1,0.25,0.5)),
+                                  train,val,test)
+      decision_tree_results = c(decision_tree_results,dt_outcome$test_perf)#2
+      svm_outcome = classification(support_vector_machines,
+                                   list(cost = as.numeric(2^seq(-5,15,3)),gamma = as.numeric(2^seq(-15,3,3))),
+                                   train,val,test)
+      support_vector_machines_results = c(support_vector_machines_results,svm_outcome$test_perf)#3
+      nb_outcome = classification(naive_bayes,list(),train,val,test)
+      naive_bayes_results = c(naive_bayes_results,nb_outcome$test_perf)#4
+      ann_outcome = classification(artificial_neural_network,
+                                   list(decay = c(0.001, 0.01,.1),size = seq(2,20,2)),train,val,test)
+      artificial_neural_network_results = c(artificial_neural_network_results,ann_outcome$test_perf)#5
+      llm_outcome = classification(logit_leaf,list(threshold_pruning = 0.25, 
+                                                   nbr_obs_leaf = 100),
+                                   train,val,test)
+      llm_results = c(llm_results, llm_outcome$test_perf) #6
+     
+     ### perform predictions on homogeneous ensembles
+      bag_outcome = classification(bag,list(nbagg = seq(10,100,10)),train,val,test)
+      bagging_results = c(bagging_results,bag_outcome$test_perf)#7
+      use_outcome = classification(USE,list(n= c(10,15)),train,val,test)
+      USE_results = c(USE_results,use_outcome$test_perf)#8
+      rf_outcome = classification(rf,list(ntrees = c(500)),train,val,test)
+      rf_results = c(rf_results,rf_outcome$test_perf)#9
+      ibrf_outcome = classification(ibrf,list(ntrees = c(50),m = c(0.5),d = c(0.1)),train,val,test)
+      ibrf_results = c(ibrf_results,ibrf_outcome$test_perf)#10
+      
+      ada_outcome = classification(ada_boost,list(niters = c(50,100,250,500)),train,val,test)
+      adaboost_results = c(adaboost_results,ada_outcome$test_perf)#11
+      xgb_outcome = classification(xg_boost,list(niters = c(50,100,250,500),
+                                            depth = c(4,6,8),learning = c(0.1)),
+                                   train,val,test)
+      xgboost_results = c(xgboost_results,xgb_outcome$test_perf)#12
+      catboost_outcome = classification(cat_boost,list(niters = c(50,100,250,500),
+                                            depth = c(4,6,8),learning = c(0.1)),
+                                   train,val,test)
+      catboost_results = c(catboost_results,catboost_outcome$test_perf)#13
+      lgbm_outcome = classification(light_gbm,list(niters = c(50,100,250,500),
+                                            depth = c(4,6,8),learning = c(0.1)),
+                                   train,val,test)
+      lgbm_results = c(lgbm_results,lgbm_outcome$test_perf)#14
+      sgb_outcome = classification(sgb,list(niters = c(50,100,250,500),
+                                            depth = c(4,6,8),shrinkage = c(0.1)),
+                                   train,val,test)
+      sgb_results = c(sgb_results,sgb_outcome$test_perf)#15
+      
+      lmt_outcome = classification(lmt,list(niters = c(200)),train,val,test)
+      lmt_results = c(lmt_results,lmt_outcome$test_perf)#16
+      rsm_outcome = classification(rsm,list(ntrees = c(100)),train,val,test)
+      rsm_results = c(rsm_results,rsm_outcome$test_perf)#17
+      rotfor_outcome = classification(rotfor,list(n_predictors = if (ncol(train)-1 >4) 3 else 2,n_members = c(100)),
+                                      train,val,test)
+      rotfor_results = c(rotfor_results,rotfor_outcome$test_perf)#18
+      adt_outcome = classification(adt,list(niters = c(10,20,30,40,50)),train,val,test)
+      adt_results = c(adt_results,adt_outcome$test_perf)#19
+      pre_outcome = classification(rule_ens,list(),train,val,test)
+      pre_results = c(pre_results, pre_outcome$test_perf) #20
+      
+      #save predictions and performance
+      #auc , can be changed
+      hetero_predictions_val <- data.frame(logit_outcome$val_probs  ,dt_outcome$val_probs,
+                                           svm_outcome$val_probs    ,nb_outcome$val_probs,
+                                           ann_outcome$val_probs    ,llm_outcome$val_probs,
+                                           bag_outcome$val_probs,
+                                           use_outcome$val_probs    ,rf_outcome$val_probs,
+                                           ibrf_outcome$val_probs   ,ada_outcome$val_probs,
+                                           xgb_outcome$val_probs    ,catboost_outcome$val_probs,
+                                           lgbm_outcome$val_probs,
+                                           sgb_outcome$val_probs,
+                                           lmt_outcome$val_probs    ,rsm_outcome$val_probs,
+                                           rotfor_outcome$val_probs ,adt_outcome$val_probs,
+                                           pre_outcome$val_probs)
+      hetero_predictions_val <- data.matrix(hetero_predictions_val)
+      colnames(hetero_predictions_val) <- classifier_names
+     
+      hetero_predictions_test <- data.frame(logit_outcome$test_probs  ,dt_outcome$test_probs,
+                                            svm_outcome$test_probs    ,nb_outcome$test_probs,
+                                            ann_outcome$test_probs    ,llm_outcome$test_probs,
+                                            bag_outcome$test_probs,
+                                            use_outcome$test_probs    ,rf_outcome$test_probs,
+                                            ibrf_outcome$test_probs   ,ada_outcome$test_probs,
+                                            xgb_outcome$test_probs    ,catboost_outcome$test_probs,
+                                            lgbm_outcome$test_probs,
+                                            sgb_outcome$test_probs,
+                                            lmt_outcome$test_probs    ,rsm_outcome$test_probs,
+                                            rotfor_outcome$test_probs ,adt_outcome$test_probs,
+                                            pre_outcome$test_probs)
+      hetero_predictions_test <- data.matrix(hetero_predictions_test)
+      colnames(hetero_predictions_test) <- classifier_names
+     
+      evaluator <- 1 #auc
+      hetero_performance_val <- c(logit_outcome$val_perf[[evaluator]]  ,dt_outcome$val_perf[[evaluator]],
+                                  svm_outcome$val_perf[[evaluator]]    ,nb_outcome$val_perf[[evaluator]],
+                                  ann_outcome$val_perf[[evaluator]]    ,llm_outcome$val_perf[[evaluator]],
+                                  bag_outcome$val_perf[[evaluator]],
+                                  use_outcome$val_perf[[evaluator]]    ,rf_outcome$val_perf[[evaluator]],
+                                  ibrf_outcome$val_perf[[evaluator]]   ,ada_outcome$val_perf[[evaluator]],
+                                  xgb_outcome$val_perf[[evaluator]]    ,catboost_outcome$val_perf[[evaluator]],
+                                  lgbm_outcome$val_perf[[evaluator]],
+                                  sgb_outcome$val_perf[[evaluator]],
+                                  lmt_outcome$val_perf[[evaluator]]    ,rsm_outcome$val_perf[[evaluator]],
+                                  rotfor_outcome$val_perf[[evaluator]] ,adt_outcome$val_perf[[evaluator]],
+                                  pre_outcome$val_perf[[evaluator]])
+      hetero_performance_val <- hetero_performance_val/sum(hetero_performance_val)
+      
+      
+      ga_outcome <- hybrid_classification(genetic_algorithm,list(iters = c(500),popSize = c(7*ncol(hetero_predictions_val)),
+                                                                 mut = c(0.033,0.5)),
+                                          hetero_predictions_val,
+                                          hetero_predictions_test,hetero_performance_val)
+      ga_results <- c(ga_results,ga_outcome$test_perf)#21
+      HCES_bag_outcome <- hybrid_classification(HCES_bag,list(niters = c(5,25)),
+                                                hetero_predictions_val,
+                                                hetero_predictions_test,hetero_performance_val)
+      HCES_bag_results <- c(HCES_bag_results,HCES_bag_outcome$test_perf)#22
+      simple_average_outcome <- hybrid_classification(simple_average,list(),
+                                                      hetero_predictions_val,
+                                                      hetero_predictions_test,hetero_performance_val)
+      simple_average_results <- c(simple_average_results,simple_average_outcome$test_perf)#23
+      weighted_average_outcome <- hybrid_classification(weighted_average,list(),
+                                                        hetero_predictions_val,
+                                                        hetero_predictions_test,hetero_performance_val)
+      weighted_average_results <- c(weighted_average_results,weighted_average_outcome$test_perf)#24
+      stacking_outcome <- hybrid_classification(stacking,list(),
+                                                        hetero_predictions_val,
+                                                        hetero_predictions_test,hetero_performance_val)
+      stacking_results <- c(stacking_results,stacking_outcome$test_perf)#25
+      #make trycatch because it often crashes
+      nnbl_results<- tryCatch({
+        nnbl_outcome <- hybrid_classification(nnbl,list(),
+                                            hetero_predictions_val,
+                                            hetero_predictions_test,hetero_performance_val)
+        temp <- c(nnbl_results,nnbl_outcome$test_perf)#26
+        temp
+      }, 
+      error = function (e) {
+        message('An error occured, catching mistake')
+        message(e)
+        temp <- c(nnbl_results,c(NA, NA, NA, NA, NA))
+        return(temp)
+      })
+      
+      ginnls_outcome <- hybrid_classification(ginnls,list(),
+                                              hetero_predictions_val,
+                                              hetero_predictions_test,hetero_performance_val)
+      ginnls_results <- c(ginnls_results,ginnls_outcome$test_perf)#27
+      lhnnls_outcome <- hybrid_classification(lhnnls,list(),
+                                              hetero_predictions_val,
+                                              hetero_predictions_test,hetero_performance_val)
+      lhnnls_results <- c(lhnnls_results,lhnnls_outcome$test_perf)#28
+      de_outcome <- hybrid_classification(de,list(cr = c(0.5, 0.6938),pop_size = c(20, 100),n_gen = c(50, 500)),
+                                          hetero_predictions_val,
+                                          hetero_predictions_test,hetero_performance_val)
+      de_results <- c(de_results,de_outcome$test_perf)#29
+      pso_outcome <- hybrid_classification(pso,list(maxit = c(100,500), s = c(30,40)),
+                                           hetero_predictions_val,
+                                           hetero_predictions_test,hetero_performance_val)
+      pso_results <- c(pso_results,pso_outcome$test_perf)#30
+      gsa_outcome <- hybrid_classification(gsa,list(maxit = c(500),temperature = c(0.5),maxcall = c(1e7),
+                                                    visit = c(2.7),accept = c(-5)),
+                                           hetero_predictions_val,
+                                           hetero_predictions_test,hetero_performance_val)
+      gsa_results <- c(gsa_results,gsa_outcome$test_perf)#31
+      ma_outcome <- hybrid_classification(ma,list(popsize = c(60),ls = c("cmaes"),istep = c(300),
+                                                  effort = c(0.5),alpha = c(0.5),threshold = c(1e-08)),
+                                          hetero_predictions_val,
+                                          hetero_predictions_test,hetero_performance_val)
+      ma_results <- c(ma_results,ma_outcome$test_perf)#32
+      soma_outcome <- hybrid_classification(soma_own,list(pathLength=c(3),
+                                                          stepLength=c(0.11),
+                                                          perturbationChance=c(0.1),
+                                                          minAbsoluteSep=c(0),
+                                                          minRelativeSep=c(0.001),
+                                                          nMigrations=c(300),populationSize=c(10)),
+                                            hetero_predictions_val,
+                                            hetero_predictions_test,hetero_performance_val)
+      soma_results <- c(soma_results,soma_outcome$test_perf)#33
+    #progress bar
+    i = i+1
+    Sys.sleep(0.1)
+    setWinProgressBar(pb, i, title=paste( round(i/total*100, 0),"% done"))
+    
+    #Save results per fold
+      save(logit_results,
+       decision_tree_results,
+       support_vector_machines_results, 
+       naive_bayes_results,
+       artificial_neural_network_results,
+       llm_results,
+       bagging_results, 
+       USE_results,
+       rf_results,
+       ibrf_results,
+       adaboost_results,
+       xgboost_results,
+       catboost_results,
+       lgbm_results,
+       sgb_results,
+       lmt_results,
+       rsm_results,
+       rotfor_results,
+       adt_results,
+       pre_results,
+       ga_results,
+       HCES_bag_results,
+       simple_average_results,
+       weighted_average_results,
+       stacking_results,
+       nnbl_results,
+       ginnls_results,
+       lhnnls_results,
+       de_results,
+       pso_results,
+       gsa_results, 
+       ma_results,
+       soma_results, 
+       file = paste0('./Performance/',names(all_data)[i_data],'_results_fold', i_fold,'.Rdata'))
+  }
+  #Save the results for each data set
+  save(logit_results,
+       decision_tree_results,
+       support_vector_machines_results, 
+       naive_bayes_results,
+       artificial_neural_network_results,
+       llm_results,
+       bagging_results, 
+       USE_results,
+       rf_results,
+       ibrf_results,
+       adaboost_results,
+       xgboost_results,
+       catboost_results,
+       lgbm_results,
+       sgb_results,
+       lmt_results,
+       rsm_results,
+       rotfor_results,
+       adt_results,
+       pre_results,
+       ga_results,
+       HCES_bag_results,
+       simple_average_results,
+       weighted_average_results,
+       stacking_results,
+       nnbl_results,
+       ginnls_results,
+       lhnnls_results,
+       de_results,
+       pso_results,
+       gsa_results, 
+       ma_results,
+       soma_results, 
+       file = paste0('./Performance/',names(all_data)[i_data],'_results.Rdata'))
+}
+
+#close the progress bar
+close(pb)
+```
+
+clean the results
+
+```{r}
+#Read in all the files 
+files <- list.files('./Performance/', pattern = '*results.Rdata', full.names = TRUE)
+
+#function that converts result into a data frame
+clean_results <- function(results){
+  results = list(results)
+  for (i in(1:length(results))){
+    #transform results into a dataframe
+    m1 <- matrix(results[[i]], ncol=5, byrow=TRUE)
+    results[[i]] <- as.data.frame(m1, stringsAsFactors=FALSE)
+    results[[i]] <- data.frame(apply(results[[i]], 2, function(x) as.numeric(as.character(x))))
+    results[[i]] <- data.frame(cbind(colMeans(matrix(results[[i]]$V1, nrow=5),na.rm = TRUE )
+                                     ,colMeans(matrix(results[[i]]$V2, nrow=5), na.rm = TRUE)
+                                     ,colMeans(matrix(results[[i]]$V3, nrow=5), na.rm = TRUE)
+                                     ,colMeans(matrix(results[[i]]$V4, nrow=5), na.rm = TRUE)
+                                     ,colMeans(matrix(results[[i]]$V5, nrow=5), na.rm = TRUE)))
+    names(results[[i]])[names(results[[i]]) == "X1"] <- "AUC"
+    names(results[[i]])[names(results[[i]]) == "X2"] <- "TDL"
+    names(results[[i]])[names(results[[i]]) == "X3"] <- "ACC"
+    names(results[[i]])[names(results[[i]]) == "X4"] <- "F-measure"
+    names(results[[i]])[names(results[[i]]) == "X5"] <- "EMPC"
+    results = results[[i]]
+  }
+  return (results)
+}
+
+#Make a loop where you read in all the data sets and 
+#append them together
+for (i in 1:length(files)) {
+  load(files[i])
+  if (i == 1) {
+    resultslogit <- clean_results(logit_results)
+    resultsdt <- clean_results(decision_tree_results)
+    resultssvm <- clean_results(support_vector_machines_results)
+    resultsnb <- clean_results(naive_bayes_results)
+    resultsann <- clean_results(artificial_neural_network_results)
+    resultsllm <- clean_results(llm_results)
+    resultsbag <- clean_results((bagging_results))
+    resultsUSE <- clean_results(USE_results)
+    resultsrf <- clean_results(rf_results)
+    resultsibrf <- clean_results(ibrf_results)
+    resultsadaboost <- clean_results(adaboost_results)
+    resultsxgboost <- clean_results(xgboost_results)
+    resultscatboost <- clean_results(catboost_results)
+    resultslgbm <- clean_results(lgbm_results)
+    resultssgb <- clean_results(sgb_results)
+    resultslmt <- clean_results(lmt_results)
+    resultsrsm <- clean_results(rsm_results)
+    resultsrotfor <- clean_results(rotfor_results)
+    resultsadt <- clean_results(adt_results)
+    resultsga <- clean_results(ga_results)
+    resultspre <- clean_results(pre_results)
+    resultsHCES_bag <- clean_results(HCES_bag_results)
+    results_simple_average <- clean_results(simple_average_results)
+    results_weighted_average <- clean_results(weighted_average_results)
+    resultsstacking <- clean_results(stacking_results)
+    resultsnnbl <- clean_results(nnbl_results)
+    resultsginnls <- clean_results(ginnls_results)
+    resultslhnnls <- clean_results(lhnnls_results)
+    resultsde <- clean_results(de_results)
+    resultspso <- clean_results(pso_results)
+    resultsgsa <- clean_results(gsa_results)
+    resultsma <- clean_results(ma_results)
+    resultssoma <- clean_results(soma_results)
+  } else {
+    resultslogit <- rbind(resultslogit, clean_results(logit_results))
+    resultsdt <- rbind(resultsdt, clean_results(decision_tree_results))
+    resultssvm <- rbind(resultssvm, clean_results(support_vector_machines_results))
+    resultsnb <- rbind(resultsnb, clean_results(naive_bayes_results))
+    resultsann <- rbind(resultsann, clean_results(artificial_neural_network_results))
+    resultsllm <- rbind(resultsllm, clean_results(llm_results))
+    resultsbag <- rbind(resultsbag, clean_results((bagging_results)))
+    resultsUSE <- rbind(resultsUSE, clean_results(USE_results))
+    resultsrf <- rbind(resultsrf, clean_results(rf_results))
+    resultsibrf <- rbind(resultsibrf, clean_results(ibrf_results))
+    resultsadaboost <- rbind(resultsadaboost, clean_results(adaboost_results))
+    resultsxgboost <- rbind(resultsxgboost, clean_results(xgboost_results))
+    resultscatboost <- rbind(resultscatboost, clean_results(catboost_results))
+    resultslgbm <- rbind(resultslgbm, clean_results(lgbm_results))
+    resultssgb <- rbind(resultssgb, clean_results(sgb_results))
+    resultslmt <- rbind(resultslmt, clean_results(lmt_results))
+    resultsrsm <- rbind(resultsrsm, clean_results(rsm_results))
+    resultsrotfor <- rbind(resultsrotfor, clean_results(rotfor_results))
+    resultsadt <- rbind(resultsadt, clean_results(adt_results))
+    resultspre <- rbind(resultspre, clean_results(pre_results))
+    resultsga <- rbind(resultsga, clean_results(ga_results))
+    resultsHCES_bag <- rbind(resultsHCES_bag, clean_results(HCES_bag_results))
+    results_simple_average <- rbind(results_simple_average, clean_results(simple_average_results))
+    results_weighted_average <- rbind(results_weighted_average, clean_results(weighted_average_results))
+    resultsstacking <- rbind(resultsstacking, clean_results(stacking_results))
+    resultsnnbl <- rbind(resultsnnbl, clean_results(nnbl_results))
+    resultsginnls <- rbind(resultsginnls, clean_results(ginnls_results))
+    resultslhnnls <- rbind(resultslhnnls, clean_results(lhnnls_results))
+    resultsde <- rbind(resultsde, clean_results(de_results))
+    resultspso <- rbind(resultspso, clean_results(pso_results))
+    resultsgsa <- rbind(resultsgsa, clean_results(gsa_results))
+    resultsma <- rbind(resultsma, clean_results(ma_results))
+    resultssoma <- rbind(resultssoma, clean_results(soma_results))
+  }
+}
+
+#Name all classifiers
+classifier_names <- c("LR","DT","SVM","NB","ANN", "LLM",
+                      "BAG","USE","RF","IBRF",
+                      "ADA","XGB","CATB","LGBM","SGB",
+                      "LMT","RSM","ROTFOR","ADT", "PRE")
+
+#Make a list with all results
+classifier_names <- c(classifier_names,c("GA","HCES_bag","avgS","avgW","STACK","nnbl","ginnls","lhnnls","DE",
+                                         "PSO","GSA","MA","SOMA")) 
+
+#a list with all previous results
+results_all <- list(resultslogit,resultsdt,resultssvm,resultsnb,
+                    resultsann, resultsllm, resultsbag,resultsUSE,resultsrf,
+                    resultsibrf,resultsadaboost,resultsxgboost,resultscatboost,
+                    resultslgbm,resultssgb,
+                    resultslmt,resultsrsm,resultsrotfor,resultsadt,resultspre,
+                    resultsga,resultsHCES_bag,results_simple_average,results_weighted_average,
+                    resultsstacking,
+                    resultsnnbl,resultsginnls,resultslhnnls,resultsde,
+                    resultspso,resultsgsa,resultsma,resultssoma)
+num_classifiers <- length(results_all)
+num_sets <- nrow(results_all[[1]])
+num_metrics <- ncol(results_all[[1]])
+
+#Add all the results into one data frame to make computations easier
+results_df <- bind_rows(list(resultslogit,resultsdt,resultssvm,resultsnb,
+               resultsann, resultsllm, resultsbag,resultsUSE,resultsrf,
+               resultsibrf,resultsadaboost,resultsxgboost,resultscatboost,
+               resultslgbm,resultssgb,
+               resultslmt,resultsrsm,resultsrotfor,resultsadt,resultspre,
+               resultsga,resultsHCES_bag,results_simple_average,results_weighted_average,
+               resultsstacking,
+               resultsnnbl,resultsginnls,resultslhnnls,resultsde,
+               resultspso,resultsgsa,resultsma,resultssoma))
+results_df <- cbind(Algo = rep(classifier_names,rep(11,33)),
+                    Data = rep(c('D1','D2', 'D3', 'D4', 'D5', 'D6', 'D7', 'D8', 'D9', 'D10', 'D11'),33),
+                    results_df)
+
+```
+
+## Analysis
+
+Boxplots for each performance metric
+```{r}
+#AUC
+results_df %>%
+  ggplot(., aes(y = AUC, x = fct_reorder(Algo ,AUC, .fun = mean, .desc = FALSE),fill = Algo)) + 
+  geom_boxplot(show.legend = FALSE) + 
+  xlab('Classifier') + ylab('Value') +  
+  coord_flip() + theme(text = element_text(size = 17))
+
+
+#TDL
+results_df %>%
+  ggplot(., aes(y = TDL, x = fct_reorder(Algo ,TDL, .fun = mean, .desc = FALSE),fill = Algo)) + 
+  geom_boxplot(show.legend = FALSE) + 
+  xlab('Classifier') + ylab('Value') +  
+  coord_flip() + theme(text = element_text(size = 17))
+
+
+#ACC
+results_df %>%
+  ggplot(., aes(y = ACC, x = fct_reorder(Algo ,ACC, .fun = mean, .desc = FALSE),fill = Algo)) + 
+  geom_boxplot(show.legend = FALSE) + 
+  xlab('Classifiers') + ylab('Value') +  
+  coord_flip() + theme(text = element_text(size = 17)) 
+
+#EMPC
+results_df %>%
+  ggplot(., aes(y = EMPC, x = fct_reorder(Algo ,EMPC, .fun = mean, .desc = FALSE),fill = Algo)) + 
+  geom_boxplot(show.legend = FALSE) + 
+  xlab('Classifiers') + ylab('Value') +  
+  coord_flip() + theme(text = element_text(size = 17)) 
+
+
+```
+Friedman test with Rom's posthoc procedure: compare all against the best ranked. 
+
+```{r}
+#AUC
+ranks_auc_test <- results_df %>% 
+  select(-c(TDL, EMPC, `F-measure`, ACC)) %>% 
+  pivot_wider(names_from = Algo, values_from = AUC) %>% 
+  select(-Data) %>% rankMatrix(.)
+
+colMeans(ranks_auc_test)
+colMeans(ranks_auc_test) %>% which.min()
+
+#Against the best (rom)
+test <- postHocTest(ranks_auc_test, 
+                    test="friedman",
+                    control = 'GSA',
+                    correct="rom", 
+                    use.rank=FALSE)
+plotRanking(pvalues=test$corrected.pval, summary=test$summary, alpha=0.05)
+#plotPvalues(test$corrected.pval, show.pvalue = FALSE)
+
+#Write the results to excel
+#data.frame(rank = round(t(test$summary),3),
+#           pvalues = round(t(test$corrected.pval),3)) %>% 
+#  write.csv2(file = './aucs_comparison_stat.csv')
+
+#ACC
+ranks_acc_test <- results_df %>% 
+  select(-c(TDL, EMPC, `F-measure`, AUC)) %>% 
+  pivot_wider(names_from = Algo, values_from = ACC) %>% 
+  select(-Data) %>% rankMatrix(.)
+
+colMeans(ranks_acc_test)
+colMeans(ranks_acc_test) %>% which.min()
+
+#Against the best (rom)
+test <- postHocTest(ranks_acc_test, 
+                    test="friedman",
+                    control = 'nnbl',
+                    correct="rom", 
+                    use.rank=FALSE)
+plotRanking(pvalues=test$corrected.pval, summary=test$summary, alpha=0.05)
+#plotPvalues(test$corrected.pval, show.pvalue = FALSE)
+
+#Write the results
+#data.frame(rank = round(t(test$summary),3),
+ #          pvalues = round(t(test$corrected.pval),3)) %>% 
+#  write.csv2(file = './accs_comparison_stat.csv')
+
+
+#TDL
+ranks_tdl_test <- results_df %>% 
+  select(-c(AUC, EMPC, `F-measure`, ACC)) %>% 
+  pivot_wider(names_from = Algo, values_from = TDL) %>% 
+  select(-Data) %>% rankMatrix(.)
+
+colMeans(ranks_tdl_test)
+colMeans(ranks_tdl_test) %>% which.min()
+
+#Against the best (rom)
+test <- postHocTest(ranks_tdl_test, 
+                    test="friedman",
+                    control = 'STACK',
+                    correct="rom", 
+                    use.rank=FALSE)
+plotRanking(pvalues=test$corrected.pval, summary=test$summary, alpha=0.05)
+#plotPvalues(test$corrected.pval, show.pvalue = FALSE)
+
+#Write the results
+#data.frame(rank = round(t(test$summary),3),
+#           pvalues = round(t(test$corrected.pval),3)) %>% 
+#  write.csv2(file = './tdls_comparison_stat.csv')
+
+#EMPC
+ranks_empc_test <- results_df %>% 
+  select(-c(TDL, AUC, `F-measure`, ACC)) %>% 
+  pivot_wider(names_from = Algo, values_from = EMPC) %>% 
+  select(-Data) %>% rankMatrix(.)
+
+colMeans(ranks_empc_test)
+colMeans(ranks_empc_test) %>% which.min()
+
+#Against the best (rom)
+test <- postHocTest(ranks_empc_test, test="friedman",control = 'GSA',
+                    correct="rom", 
+                    use.rank=FALSE)
+plotRanking(pvalues=test$corrected.pval, summary=test$summary, alpha=0.05)
+#plotPvalues(test$corrected.pval, show.pvalue = FALSE)
+
+#Write the results
+#data.frame(rank = round(t(test$summary),3),
+ #          pvalues = round(t(test$corrected.pval),3)) %>% 
+  #write.csv2(file = './empcs_comparison_stat.csv')
+
+#Calculate the average ranks across all metrics
+all_ranks <- data.frame(AUC = colMeans(ranks_auc_test), 
+                        TDL = colMeans(ranks_tdl_test),
+                        ACC = colMeans(ranks_acc_test),
+                        EMPC = colMeans(ranks_empc_test))
+
+all_ranks %>% 
+  rowwise() %>% 
+  mutate(Average = mean(c_across()), .keep = 'unused') %>% 
+  bind_cols(Algo = classifier_names) %>% 
+  select(Algo, Average) 
+# %>% write.csv2(file = './average_ranks_stat.csv')
+
+
+```
+
+Bayesian test with ROPE
+
+```{r}
+#AUC
+aucs <- results_df %>% 
+  select(-c(TDL, EMPC, `F-measure`, ACC)) %>% 
+  pivot_wider(names_from = Algo, values_from = AUC) %>% 
+  rename(id = Data)
+
+auc_test <- perf_mod(aucs,
+                     iter = 3000,
+                     seed = 100)
+
+
+#Compare the best lhnnls with LR
+comparison <- contrast_models(auc_test, "LR", "lhnnls")
+
+comparison %>% 
+  as_tibble() %>% 
+  ggplot(aes(x = difference)) + 
+  geom_vline(xintercept = 0.01, lty = 2) + 
+  geom_vline(xintercept = -0.01, lty = 2) +
+  geom_density() + theme(text = element_text(size = 17))
+
+summary(comparison, size = 0.01) %>% 
+  select(contrast, starts_with("pract"))
+
+#Compare all algos
+control <- 'lhnnls'
+list_control <- rep(list(control),32)
+compare_algos <- classifier_names[-which(classifier_names == control)]
+list_compare <- list()
+for(i in 1:length(compare_algos)) list_compare[[i]] <- compare_algos[i]
+aucs_comparison <- contrast_models(auc_test, 
+                                   list_compare,
+                                   list_control)
+#Save the full bayes tests
+classifier_names_df <- classifier_names %>% 
+  as_tibble() %>% 
+  rename(Algo = value)
+
+comparison <- summary(aucs_comparison, size=.01) %>% 
+  select(contrast, starts_with("pract")) %>% 
+  mutate(Algo = str_replace_all(contrast,' vs lhnnls','')) %>% 
+  select(-1)
+
+classifier_names_df %>% 
+  left_join(comparison) #%>% write.csv2(file = './aucs_comparison_bayes_full.csv')
+
+
+#ACC
+accs <- results_df %>% 
+  select(-c(TDL, EMPC, `F-measure`, AUC)) %>% 
+  pivot_wider(names_from = Algo, values_from = ACC) %>% 
+  rename(id = Data)
+
+acc_test <- perf_mod(accs,
+                     iter = 3000,
+                     seed = 100)
+
+
+#Compare all algos
+control <- 'nnbl'
+list_control <- rep(list(control),32)
+compare_algos <- classifier_names[-which(classifier_names == control)]
+list_compare <- list()
+for(i in 1:length(compare_algos)) list_compare[[i]] <- compare_algos[i]
+accs_comparison <- contrast_models(acc_test, 
+                                   list_compare,
+                                   list_control)
+#Save the full bayes tests
+comparison <- summary(accs_comparison, size=.01) %>% 
+  select(contrast, starts_with("pract")) %>% 
+  mutate(Algo = str_replace_all(contrast,' vs nnbl','')) %>% 
+  select(-1)
+
+classifier_names_df %>% 
+  left_join(comparison) #%>% write.csv2(file = './accs_comparison_bayes_full.csv')
+
+
+#TDL
+tdls <- results_df %>% 
+  select(-c(ACC, EMPC, `F-measure`, AUC)) %>% 
+  pivot_wider(names_from = Algo, values_from = TDL) %>% 
+  rename(id = Data)
+
+tdl_test <- perf_mod(tdls,
+                     iter = 3000,
+                     seed = 100)
+
+
+#Compare all algos
+control <- 'STACK'
+list_control <- rep(list(control),32)
+compare_algos <- classifier_names[-which(classifier_names == control)]
+list_compare <- list()
+for(i in 1:length(compare_algos)) list_compare[[i]] <- compare_algos[i]
+tdls_comparison <- contrast_models(tdl_test, 
+                                   list_compare,
+                                   list_control)
+
+#Save the full bayes tests
+comparison <- summary(tdls_comparison, size=.01) %>% 
+  select(contrast, starts_with("pract")) %>% 
+  mutate(Algo = str_replace_all(contrast,' vs STACK','')) %>% 
+  select(-1)
+
+classifier_names_df %>% 
+  left_join(comparison) #%>% write.csv2(file = './tdls_comparison_bayes_full.csv')
+
+
+#EMPC
+empcs <- results_df %>% 
+  select(-c(ACC, TDL, `F-measure`, AUC)) %>% 
+  pivot_wider(names_from = Algo, values_from = EMPC) %>% 
+  rename(id = Data)
+
+empc_test <- perf_mod(empcs,
+                     iter = 3000,
+                     seed = 100)
+
+#Compare all algos
+control <- 'HCES_bag'
+list_control <- rep(list(control),32)
+compare_algos <- classifier_names[-which(classifier_names == control)]
+list_compare <- list()
+for(i in 1:length(compare_algos)) list_compare[[i]] <- compare_algos[i]
+empcs_comparison <- contrast_models(empc_test, 
+                                   list_compare,
+                                   list_control)
+
+#Save the full bayes tests
+comparison <- summary(empcs_comparison, size=.01) %>% 
+  select(contrast, starts_with("pract")) %>% 
+  mutate(Algo = str_replace_all(contrast,' vs HCES_bag','')) %>% 
+  select(-1)
+
+classifier_names_df %>% 
+  left_join(comparison) #%>% write.csv2(file = './empcs_comparison_bayes_full.csv')
+
+```
+
