@@ -17,7 +17,6 @@ In the paper there are 11 data sets of which 3 are proprietary and 8 publicly av
 * https://www.kaggle.com/barun2104/telecom-churn?select=telecom_churn.csv 
 * https://www.kaggle.com/blastchar/telco-customer-churn 
 * https://www.kaggle.com/datasets/mahreen/sato2015 
-* https://www.kaggle.com/abhinav89/telecom-customer/data  
 * https://www.kaggle.com/datasets/jpacse/datasets-for-churn-telecom?select=cell2celltrain.csv
 * www.sgi.com/tech/mlc/db
 
