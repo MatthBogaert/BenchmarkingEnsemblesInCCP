@@ -26,5 +26,5 @@ Since the paper benchmarks 33 classifiers across all 8 data sets, the code takes
 
 ## References
 
-Delaere Lex, Bogaert Matthias. "Benchmarking Ensembles in Customer Churn Prediction". Under review. 
+Delaere Lex, Bogaert Matthias. "Ensemble Methods in Customer Churn Prediction: a Comparative Analysis of the State-of-the-art". Under review. 
 
