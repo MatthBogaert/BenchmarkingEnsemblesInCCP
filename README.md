@@ -1,6 +1,6 @@
 # BenchmarkingEnsemblesInCCP
 
-Code repository for the paper: 'Benchmarking Ensemble in Customer Churn Prediction' by Lex Delaere and Matthias Bogaert. 
+Code repository for the paper: 'Ensemble Methods in Customer Churn Prediction: a Comparative Analysis of the State-of-the-art' by Lex Delaere and Matthias Bogaert. 
 
 ## Requirements
 
