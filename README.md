@@ -1,6 +1,6 @@
 # BenchmarkingEnsemblesInCCP
 
-Code repository for the paper: 'Ensemble Methods in Customer Churn Prediction: a Comparative Analysis of the State-of-the-art' by Matthias Bogaert and Lex Delaere. 
+Code repository for the paper: 'Bogaert, M., & Delaere, L. (2023). Ensemble Methods in Customer Churn Prediction: A Comparative Analysis of the State-of-the-Art. Mathematics, 11(5), 1137.' 
 
 ## Requirements
 
@@ -26,5 +26,5 @@ Since the paper benchmarks 33 classifiers across all 8 data sets, the code takes
 
 ## References
 
-Bogaert Matthias, Delaere Lex. "Ensemble Methods in Customer Churn Prediction: a Comparative Analysis of the State-of-the-art". Under review. 
+Bogaert, M., & Delaere, L. (2023). Ensemble Methods in Customer Churn Prediction: A Comparative Analysis of the State-of-the-Art. Mathematics, 11(5), 1137.
 
